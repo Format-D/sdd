@@ -416,21 +416,30 @@ func (s *Server) attachedSession(ctx context.Context, req *mcp.CallToolRequest, 
 		return nil, noHandleError()
 	}
 	ss := s.sessions.get(id)
+	var fresh bool
 	if ss == nil {
 		workflow, err := s.app.RefreshWorkflow(ctx, s.requestIdentity(req), id)
 		if err != nil {
 			return nil, err
 		}
-		ss = s.sessions.put(&shellSession{root: workflow})
+		candidate := &shellSession{root: workflow}
+		candidate.mu.Lock()
+		ss = s.sessions.put(candidate)
+		fresh = ss == candidate
+		if !fresh {
+			candidate.mu.Unlock()
+		}
 	}
-	ss.mu.Lock()
+	if !fresh {
+		ss.mu.Lock()
+		workflow, err := s.app.RefreshWorkflow(ctx, s.requestIdentity(req), id)
+		if err != nil {
+			ss.mu.Unlock()
+			return nil, err
+		}
+		ss.root = workflow
+	}
 	ss.pending, ss.seen = nil, nil
-	workflow, err := s.app.RefreshWorkflow(ctx, s.requestIdentity(req), id)
-	if err != nil {
-		ss.mu.Unlock()
-		return nil, err
-	}
-	ss.root = workflow
 	if ss.root.Finished() {
 		ss.mu.Unlock()
 		s.sessions.evict(id)

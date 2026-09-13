@@ -15,6 +15,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	sdd "github.com/networkteam/sdd/pkg/application"
+	pkgllm "github.com/networkteam/sdd/pkg/llm"
+	localadapter "github.com/networkteam/sdd/pkg/local"
 	mcpserver "github.com/networkteam/sdd/pkg/mcpapp"
 )
 
@@ -204,5 +206,184 @@ func TestWarmSessionReplayErrorStopsTool(t *testing.T) {
 	}
 	if after.Version != stored.Version+1 {
 		t.Fatal("replay failure allowed a tool or attachment stamp to persist")
+	}
+}
+
+type countingSessionStore struct {
+	sdd.SessionStore
+	loads atomic.Int64
+}
+
+func (s *countingSessionStore) Load(ctx context.Context, id sdd.SessionID) (sdd.StoredSession, error) {
+	s.loads.Add(1)
+	return s.SessionStore.Load(ctx, id)
+}
+
+func newServerWithSessionStore(t *testing.T, graphDir string, sessions sdd.SessionStore) *mcpserver.Server {
+	t.Helper()
+	graph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{
+		Project: "test", GraphDir: graphDir, Branch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
+		Project: sdd.ProjectRef{ID: "test"}, Graph: graph, DefaultBranch: "main",
+		LLM: pkgllm.RunnerFunc(func(context.Context, pkgllm.Request) (pkgllm.Result, error) {
+			return pkgllm.Result{}, errors.New("unexpected LLM request")
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobs, err := localadapter.NewFilesystemStagedBlobStoreAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := sdd.NewApplication(sdd.ApplicationOptions{
+		Access: rootAccess{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := mcpserver.New(mcpserver.Options{
+		Application: app, LocalIdentity: sdd.RequestIdentity{Subject: "tester"}, SearchSyncMode: sdd.SearchSyncNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server
+}
+
+func TestSessionRequestLoadsLedgerOnceOnColdAndWarmCache(t *testing.T) {
+	first := newTestServer(t, nil, "", "")
+	door := openSession(t, connect(t, first.srv))
+	sessions := &countingSessionStore{SessionStore: first.sessions}
+	server := newServerWithSessionStore(t, first.graphDir, sessions)
+	client := connect(t, server)
+	for _, state := range []string{"cold", "warm"} {
+		t.Run(state, func(t *testing.T) {
+			sessions.loads.Store(0)
+			var result mcpserver.RegistryResult
+			call(t, client, "registry", map[string]any{"session": door.Session}, &result)
+			if len(result.Functions) == 0 {
+				t.Fatal("registry returned no functions")
+			}
+			if got := sessions.loads.Load(); got != 1 {
+				t.Fatalf("request loaded the session ledger %d times, want 1", got)
+			}
+		})
+	}
+}
+
+// coldLoadBarrier returns each of the first two loads only when the test lets
+// that request proceed. Both requests can therefore replay the same old ledger.
+type coldLoadBarrier struct {
+	sdd.SessionStore
+	loads  atomic.Int64
+	loaded chan blockedSessionLoad
+}
+
+type blockedSessionLoad struct {
+	stored  sdd.StoredSession
+	release chan struct{}
+}
+
+func (s *coldLoadBarrier) Load(ctx context.Context, id sdd.SessionID) (sdd.StoredSession, error) {
+	stored, err := s.SessionStore.Load(ctx, id)
+	if err != nil || s.loads.Add(1) > 2 {
+		return stored, err
+	}
+	load := blockedSessionLoad{stored: stored, release: make(chan struct{})}
+	select {
+	case s.loaded <- load:
+	case <-ctx.Done():
+		return sdd.StoredSession{}, ctx.Err()
+	}
+	select {
+	case <-load.release:
+		return stored, nil
+	case <-ctx.Done():
+		return sdd.StoredSession{}, ctx.Err()
+	}
+}
+
+func TestConcurrentColdSessionRequestsRefreshAfterCacheWinner(t *testing.T) {
+	first := newTestServer(t, nil, "", "")
+	door := openSession(t, connect(t, first.srv))
+	sessions := &coldLoadBarrier{SessionStore: first.sessions, loaded: make(chan blockedSessionLoad, 2)}
+	server := newServerWithSessionStore(t, first.graphDir, sessions)
+	client := connect(t, server)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	type reply struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	start := func() <-chan reply {
+		done := make(chan reply, 1)
+		go func() {
+			result, err := client.CallTool(ctx, &mcp.CallToolParams{
+				Name: "start_procedure", Arguments: map[string]any{"session": door.Session, "canonical": "capture"},
+			})
+			done <- reply{result: result, err: err}
+		}()
+		return done
+	}
+	waitLoad := func() blockedSessionLoad {
+		t.Helper()
+		select {
+		case load := <-sessions.loaded:
+			return load
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+			return blockedSessionLoad{}
+		}
+	}
+	waitReply := func(done <-chan reply) mcpserver.ServeResult {
+		t.Helper()
+		select {
+		case got := <-done:
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.result.IsError {
+				t.Fatalf("start_procedure returned tool error: %s", contentText(got.result))
+			}
+			var result mcpserver.ServeResult
+			decodeStructured(t, got.result, &result)
+			return result
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+			return mcpserver.ServeResult{}
+		}
+	}
+
+	firstReply := start()
+	firstLoad := waitLoad()
+	secondReply := start()
+	secondLoad := waitLoad()
+	if firstLoad.stored.Version != secondLoad.stored.Version {
+		t.Fatal("cold requests did not read the same session version")
+	}
+	close(firstLoad.release)
+	a := waitReply(firstReply)
+	// The second request carries the old ledger, but must discard it after the
+	// first request wins the cache entry and persists its procedure instance.
+	close(secondLoad.release)
+	b := waitReply(secondReply)
+	if a.Instance == "" || b.Instance == "" || a.Instance == b.Instance {
+		t.Fatalf("concurrent requests returned instance handles %q and %q", a.Instance, b.Instance)
+	}
+
+	var resumed mcpserver.ResumeSessionResult
+	call(t, client, "resume_session", map[string]any{"session": door.Session}, &resumed)
+	found := map[string]bool{}
+	for _, open := range resumed.Open {
+		found[open.Instance] = true
+	}
+	if !found[a.Instance] || !found[b.Instance] {
+		t.Fatalf("resume lost a concurrently started instance: %+v", resumed.Open)
 	}
 }
