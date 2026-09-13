@@ -3,7 +3,7 @@ module example.com/extendingsdd
 go 1.26.1
 
 require (
-	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/networkteam/sdd v0.0.0
 )
 

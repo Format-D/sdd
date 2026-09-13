@@ -409,11 +409,8 @@ func (s *Server) registerTools() {
 	}, s.registryDocs)
 }
 
-// attachedSession resolves the session a tool names by its handle: cached
-// when this server already holds it replayed, loaded from the store otherwise
-// — a same-ID load that raced another keeps the winner. The handle is the
-// dialogue's identity and its capability (d-cpt-aen); a missing one names the
-// doors. The session comes back locked; the caller unlocks it.
+// attachedSession returns the named session locked and replayed from its ledger.
+// The first load stamps the attachment; later requests only refresh the replay.
 func (s *Server) attachedSession(ctx context.Context, req *mcp.CallToolRequest, session string) (*shellSession, error) {
 	id := sdd.SessionID(strings.TrimSpace(session))
 	if id == "" {
@@ -430,6 +427,13 @@ func (s *Server) attachedSession(ctx context.Context, req *mcp.CallToolRequest, 
 		ss = s.sessions.put(&shellSession{root: workflow})
 	}
 	ss.mu.Lock()
+	ss.pending, ss.seen = nil, nil
+	workflow, err := s.app.RefreshWorkflow(ctx, s.requestIdentity(req), id)
+	if err != nil {
+		ss.mu.Unlock()
+		return nil, err
+	}
+	ss.root = workflow
 	if ss.root.Finished() {
 		ss.mu.Unlock()
 		s.sessions.evict(id)

@@ -326,8 +326,10 @@ func TestWorkflowReorientationRefreshesBranchAfterTerminalCASConflict(t *testing
 		t.Fatalf("setup did not leave the expected stale cache: stored=%q cached=%q", stored.Metadata.Branch, workflow.Branch())
 	}
 
-	// Reorientation appends its own event; that append loses the CAS against the
-	// authoritative version, and the resync it triggers is the convergence point.
+	workflow, err = application.RefreshWorkflow(t.Context(), identity, workflow.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := workflow.Reorient(t.Context(), identity); err != nil {
 		t.Fatal(err)
 	}

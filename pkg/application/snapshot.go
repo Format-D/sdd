@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/networkteam/sdd/internal/finders"
-	"github.com/networkteam/sdd/internal/meta"
 	"github.com/networkteam/sdd/internal/model"
 	"github.com/networkteam/sdd/pkg/application/types"
 	"gopkg.in/yaml.v3"
@@ -192,48 +191,29 @@ func LoadSnapshotFS(ctx context.Context, project ProjectID, revision string, fsy
 		graphDir = "."
 	}
 	data := SnapshotData{Project: project, Revision: revision}
-	err := fs.WalkDir(fsys, graphDir, func(filename string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			if filename != graphDir && meta.IsSDDMetaDir(entry) {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(entry.Name(), ".md") {
-			return nil
-		}
-		rel := strings.TrimPrefix(filename, strings.TrimSuffix(graphDir, "/")+"/")
-		if graphDir == "." {
-			rel = strings.TrimPrefix(filename, "./")
-		}
-		raw, err := fs.ReadFile(fsys, filename)
+	for file, err := range WalkSnapshotFiles(ctx, fsys, graphDir) {
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("sdd: walking graph documents: %w", err)
+		}
+		if !file.Document {
+			continue
+		}
+		rel := snapshotRelativePath(file.Path, graphDir)
+		raw, err := fs.ReadFile(fsys, file.Path)
+		if err != nil {
+			return nil, fmt.Errorf("sdd: walking graph documents: %w", err)
 		}
 		if strings.HasPrefix(rel, "wip/") {
 			data.WIP = append(data.WIP, WIPDocument{LogicalPath: rel, Content: string(raw)})
-			return nil
-		}
-		if _, err := model.RelPathToID(rel); err != nil {
-			return nil
+			continue
 		}
 		document, err := parseEntryDocument(rel, raw)
 		if err != nil {
-			// A file whose frontmatter cannot even be decoded no longer aborts
-			// the walk: it is recorded as an unreadable document that
-			// BuildSnapshot turns into a graph load issue. File-read and walk
-			// errors above stay hard failures.
+			// Decode failures become health issues; source read failures stay errors.
 			data.Unreadable = append(data.Unreadable, DocumentIssue{LogicalPath: rel, Message: err.Error()})
-			return nil
+			continue
 		}
 		data.Entries = append(data.Entries, document)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("sdd: walking graph documents: %w", err)
 	}
 	for index := range data.Entries {
 		document := &data.Entries[index]

@@ -152,10 +152,8 @@ func TestEngineOperationAppendsOnceAndServesDoNotWrite(t *testing.T) {
 }
 
 // TestSecondClientLoadsAndBothMayWrite covers d-cpt-aen: the handle is the
-// capability, so a second client presenting the session ID loads it without
-// consent or takeover, both consumers may write (the version race between them
-// is absorbed), and the stamp records the client that last attached — not a
-// lock that the other's write would trip.
+// capability, so either client may refresh its replay and write. The attachment
+// stamp records the last client to load, without granting exclusive ownership.
 func TestSecondClientLoadsAndBothMayWrite(t *testing.T) {
 	application, sessions, _, _ := newStampWorkflowApp(t, "", "", time.Now)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
@@ -182,12 +180,17 @@ func TestSecondClientLoadsAndBothMayWrite(t *testing.T) {
 		t.Fatalf("the stamp should record the client that last attached, got %+v", stored.Metadata.Attachment)
 	}
 
-	// The first client's binding is now one version behind; its write resyncs
-	// and lands rather than failing.
+	first, err = application.RefreshWorkflow(t.Context(), identity, first.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := first.Advance(t.Context(), identity, sdd.WorkflowAdvanceRequest{Instance: serve.Instance, Report: map[string]any{"body": "one"}}); err != nil {
 		t.Fatalf("the first client's write after another attached should land, got %v", err)
 	}
-	// And the second's, behind the first's write, lands the same way.
+	second, err = application.RefreshWorkflow(t.Context(), identity, second.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
 	done, err := second.Advance(t.Context(), identity, sdd.WorkflowAdvanceRequest{Instance: serve.Instance, Report: map[string]any{"anchor": "two"}})
 	if err != nil {
 		t.Fatalf("the second client's write should land, got %v", err)
@@ -204,10 +207,7 @@ func TestSecondClientLoadsAndBothMayWrite(t *testing.T) {
 	}
 }
 
-// TestSameWriterVersionRaceRetriesInvisibly covers decision 12's benign race:
-// when the stored version advances under a writer, the next append resyncs and
-// retries once — no error surfaces and the write lands.
-func TestSameWriterVersionRaceRetriesInvisibly(t *testing.T) {
+func TestStaleWorkflowEventsAreNotResubmitted(t *testing.T) {
 	application, sessions, _, _ := newStampWorkflowApp(t, "", "", time.Now)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	w, _, err := application.OpenWorkflow(t.Context(), identity, "example", sdd.WorkflowOpenRequest{ClientName: "mcp-1"})
@@ -218,7 +218,6 @@ func TestSameWriterVersionRaceRetriesInvisibly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Advance the stored version behind the binding's back.
 	stored, err := sessions.Load(t.Context(), w.ID())
 	if err != nil {
 		t.Fatal(err)
@@ -227,19 +226,41 @@ func TestSameWriterVersionRaceRetriesInvisibly(t *testing.T) {
 	if _, err := sessions.Append(t.Context(), w.ID(), stored.Version, sdd.SessionAppend{Metadata: &metadata}); err != nil {
 		t.Fatal(err)
 	}
-	// The binding's observed version is now stale. The advance must resync and
-	// retry invisibly — no error, and the write persists.
 	before := sessions.appends.Load()
-	if _, err := w.Advance(t.Context(), identity, sdd.WorkflowAdvanceRequest{Instance: serve.Instance, Report: map[string]any{"body": "one"}}); err != nil {
-		t.Fatalf("version race should retry invisibly, got %v", err)
+	_, err = w.Advance(t.Context(), identity, sdd.WorkflowAdvanceRequest{Instance: serve.Instance, Report: map[string]any{"body": "rejected"}})
+	var appErr *sdd.ApplicationError
+	if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorSessionConflict || !strings.Contains(err.Error(), "resume_session") {
+		t.Fatalf("stale advance = %v, want conflict with reorientation", err)
 	}
-	if got := sessions.appends.Load() - before; got == 0 {
-		t.Fatal("the retried advance did not persist its append")
+	if got := sessions.appends.Load() - before; got != 0 {
+		t.Fatalf("stale events submitted %d times", got)
+	}
+	after, err := sessions.Load(t.Context(), w.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Events) != len(stored.Events) {
+		t.Fatal("rejected events reached the ledger")
+	}
+	w, err = application.RefreshWorkflow(t.Context(), identity, w.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	position, err := w.ServeAll(t.Context(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, open := range position.Open {
+		if open.Instance == serve.Instance && open.Collected["body"] != nil {
+			t.Fatalf("refresh kept rejected state: %+v", open.Collected)
+		}
+	}
+	if _, err := w.Advance(t.Context(), identity, sdd.WorkflowAdvanceRequest{Instance: serve.Instance, Report: map[string]any{"body": "accepted"}}); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// conflictSessionStore returns a version conflict on Append while armed, so a
-// test can force the retry loop to exhaust its single retry.
+// conflictSessionStore rejects appends while armed.
 type conflictSessionStore struct {
 	sdd.SessionStore
 	fail atomic.Bool
@@ -252,10 +273,7 @@ func (s *conflictSessionStore) Append(ctx context.Context, id sdd.SessionID, ver
 	return s.SessionStore.Append(ctx, id, version, appendData)
 }
 
-// TestSameWriterSecondConflictSurfaces covers the tail of the benign-race retry:
-// when the single reload+retry also conflicts, the conflict surfaces typed —
-// with reorient guidance appended rather than a dead-end "version changed".
-func TestSameWriterSecondConflictSurfaces(t *testing.T) {
+func TestWorkflowAppendConflictSurfaces(t *testing.T) {
 	conflict := &conflictSessionStore{}
 	application, _, _, _ := newStampWorkflowApp(t, "", "", time.Now, func(s sdd.SessionStore) sdd.SessionStore {
 		conflict.SessionStore = s
@@ -270,7 +288,7 @@ func TestSameWriterSecondConflictSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Arm perpetual conflicts: both the initial append and its retry lose.
+	// A store-level CAS failure must reach the caller.
 	conflict.fail.Store(true)
 	_, advErr := w.Advance(t.Context(), identity, sdd.WorkflowAdvanceRequest{Instance: serve.Instance, Report: map[string]any{"body": "one"}})
 	var appErr *sdd.ApplicationError

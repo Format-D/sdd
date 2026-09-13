@@ -21,6 +21,8 @@ type Options struct {
 	Application *sdd.Application
 	// SearchSyncMode is chosen by the host for every MCP search.
 	SearchSyncMode sdd.SearchSyncMode
+	// StatelessHTTP serves each HTTP request without a transport session.
+	StatelessHTTP bool
 	// LocalIdentity supplies the identity for a trusted composition whose
 	// transport authenticates every request but cannot populate MCP TokenInfo
 	// (the local stdio and static-bearer wrappers use this seam).
@@ -39,6 +41,7 @@ type Server struct {
 	mcp            *mcp.Server
 	app            *sdd.Application
 	searchSyncMode sdd.SearchSyncMode
+	statelessHTTP  bool
 	localIdentity  sdd.RequestIdentity
 	local          bool
 	version        string
@@ -66,6 +69,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		app:            opts.Application,
 		searchSyncMode: opts.SearchSyncMode,
+		statelessHTTP:  opts.StatelessHTTP,
 		localIdentity:  opts.LocalIdentity,
 		local:          opts.LocalClient,
 		version:        opts.Version,
@@ -109,9 +113,10 @@ func (s *Server) Handler() http.Handler {
 		// preserves a public Host while forwarding to localhost. Authentication
 		// is deliberately host-owned and mandatory for such deployments.
 		DisableLocalhostProtection: true,
+		Stateless:                  s.statelessHTTP,
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.isClosing() && r.Header.Get("Mcp-Session-Id") == "" {
+		if s.isClosing() {
 			http.Error(w, ErrServerClosing.Error(), http.StatusServiceUnavailable)
 			return
 		}
