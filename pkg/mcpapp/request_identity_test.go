@@ -1,12 +1,9 @@
-package mcpapp
+package mcpapp_test
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -14,130 +11,61 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	sdd "github.com/networkteam/sdd/pkg/application"
-	pkgllm "github.com/networkteam/sdd/pkg/llm"
-	localadapter "github.com/networkteam/sdd/pkg/local"
+	mcpserver "github.com/networkteam/sdd/pkg/mcpapp"
 )
 
-type tokenTransport struct {
-	mu    sync.RWMutex
-	token string
-	base  http.RoundTripper
-}
-
-func (t *tokenTransport) set(token string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.token = token
-}
-
-func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	t.mu.RLock()
-	token := t.token
-	t.mu.RUnlock()
-	clone := req.Clone(req.Context())
-	clone.Header = req.Header.Clone()
-	clone.Header.Set("Authorization", "Bearer "+token)
-	return t.base.RoundTrip(clone)
-}
-
-func TestStreamableHTTPUsesCurrentRequestIdentity(t *testing.T) {
-	type observation struct {
-		lane     string
-		identity requestIdentity
+func TestHTTPWorkflowUsesCurrentRequestIdentity(t *testing.T) {
+	access := &observingAccess{}
+	env := newTestServer(t, nil, "", "", func(opts *testServerOptions) {
+		access.rootAccess = opts.Application.Access.(rootAccess)
+		opts.Application.Access = access
+		opts.MCP.LocalIdentity = sdd.RequestIdentity{}
+	})
+	identities := map[string]sdd.RequestIdentity{
+		"read":  {Subject: "tester", Scopes: []string{"project:read"}, Attributes: map[string]any{"sentinel": "read-request"}},
+		"write": {Subject: "tester", Scopes: []string{"project:read", "project:write"}, Attributes: map[string]any{"sentinel": "write-request"}},
+		"other": {Subject: "other", Scopes: []string{"project:read", "project:write"}},
 	}
-	var (
-		mu           sync.Mutex
-		observations []observation
-	)
-
-	server := mcp.NewServer(&mcp.Implementation{Name: "identity-spike", Version: "test"}, nil)
-	for _, lane := range []string{"project_resolution", "engine_query", "mutation_authorization"} {
-		mcp.AddTool(server, &mcp.Tool{Name: lane}, func(_ context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
-			mu.Lock()
-			observations = append(observations, observation{lane: lane, identity: identityFromRequest(req)})
-			mu.Unlock()
-			return &mcp.CallToolResult{}, struct{}{}, nil
-		})
-	}
-
-	verifier := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
-		info := &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}
-		switch token {
-		case "christopher-read":
-			info.UserID = "christopher"
-			info.Scopes = []string{"project:read"}
-			info.Extra = map[string]any{"sentinel": "read-request"}
-		case "christopher-write":
-			info.UserID = "christopher"
-			info.Scopes = []string{"project:read", "project:write"}
-			info.Extra = map[string]any{"sentinel": "write-request"}
-		case "mallory":
-			info.UserID = "mallory"
-			info.Scopes = []string{"project:write"}
-		default:
+	endpoint := newTestHTTPServer(t, env.srv.Handler(), func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+		identity, ok := identities[token]
+		if !ok {
 			return nil, auth.ErrInvalidToken
 		}
-		return info, nil
-	}
-	handler := auth.RequireBearerToken(verifier, nil)(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
-		return server
-	}, &mcp.StreamableHTTPOptions{JSONResponse: true, Stateless: true}))
-	httpServer := httptest.NewServer(handler)
-	defer httpServer.Close()
+		return &auth.TokenInfo{UserID: identity.Subject, Scopes: identity.Scopes, Extra: identity.Attributes, Expiration: time.Now().Add(time.Hour)}, nil
+	})
+	transport := endpoint.Transport("read")
+	client := connect(t, env.srv, transport)
+	opened := openSession(t, client)
+	access.requireIdentity(t, identities["read"])
 
-	roundTripper := &tokenTransport{token: "christopher-read", base: http.DefaultTransport}
-	client := mcp.NewClient(&mcp.Implementation{Name: "identity-spike-client", Version: "test"}, nil)
-	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
-		Endpoint:             httpServer.URL,
-		HTTPClient:           &http.Client{Transport: roundTripper},
-		DisableStandaloneSSE: true,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
+	var shown mcpserver.ShowResult
+	call(t, client, "show", map[string]any{"session": opened.Session, "ids": []string{fixtureGapID}}, &shown)
+	if !strings.Contains(shown.Entries, "oscillation") {
+		t.Fatalf("fixture entry was not served: %q", shown.Entries)
 	}
-	defer func() { _ = session.Close() }()
+	access.requireIdentity(t, identities["read"])
 
-	call := func(name string) {
-		t.Helper()
-		if _, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: name}); err != nil {
-			t.Fatalf("calling %s: %v", name, err)
-		}
+	transport.SetToken("write")
+	entryID := runCaptureToCompletion(t, client, opened.Session, "Current HTTP write authority")
+	access.requireIdentity(t, identities["write"])
+	call(t, client, "show", map[string]any{"session": opened.Session, "ids": []string{entryID}}, &shown)
+	if !strings.Contains(shown.Entries, entryID) {
+		t.Fatalf("created entry %q was not served: %q", entryID, shown.Entries)
 	}
-	call("project_resolution")
-	roundTripper.set("christopher-write")
-	call("engine_query")
-	call("mutation_authorization")
+	access.requireIdentity(t, identities["write"])
 
-	mu.Lock()
-	got := append([]observation(nil), observations...)
-	mu.Unlock()
-	if len(got) != 3 {
-		t.Fatalf("got %d identity observations, want 3", len(got))
+	transport.SetToken("other")
+	message := callExpectError(t, client, "info", map[string]any{"session": opened.Session})
+	if !strings.Contains(message, "owner") && !strings.Contains(message, "belong") {
+		t.Fatalf("session ownership refusal = %q", message)
 	}
-	if got[0].identity.Subject != "christopher" || len(got[0].identity.Scopes) != 1 || got[0].identity.Attributes["sentinel"] != "read-request" {
-		t.Fatalf("project resolution did not receive initialization request identity: %+v", got[0])
-	}
-	for _, observation := range got[1:] {
-		if observation.identity.Subject != "christopher" || len(observation.identity.Scopes) != 2 || observation.identity.Attributes["sentinel"] != "write-request" {
-			t.Fatalf("%s reused stale identity: %+v", observation.lane, observation.identity)
-		}
-	}
-
-	roundTripper.set("mallory")
-	call("engine_query")
-	mu.Lock()
-	last := observations[len(observations)-1]
-	mu.Unlock()
-	if last.identity.Subject != "mallory" {
-		t.Fatalf("request retained another caller's identity: %+v", last.identity)
-	}
+	access.requireIdentity(t, identities["other"])
 }
 
 type observingAccess struct {
-	runtime       *sdd.ProjectRuntime
+	rootAccess
 	mu            sync.Mutex
 	seen          []sdd.RequestIdentity
 	currentScopes map[string][]string
@@ -145,206 +73,40 @@ type observingAccess struct {
 
 func (a *observingAccess) ResolvePrincipal(_ context.Context, identity sdd.RequestIdentity) (sdd.Principal, error) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.seen = append(a.seen, identity)
 	if a.currentScopes == nil {
-		a.currentScopes = map[string][]string{}
+		a.currentScopes = make(map[string][]string)
 	}
-	a.currentScopes[identity.Subject] = append([]string(nil), identity.Scopes...)
-	a.mu.Unlock()
+	a.currentScopes[identity.Subject] = slices.Clone(identity.Scopes)
 	return sdd.Principal{Subject: identity.Subject}, nil
 }
 
-func (a *observingAccess) ResolveParticipant(context.Context, sdd.Principal, sdd.ProjectID) (string, error) {
-	return "Christopher", nil
-}
-
-func (a *observingAccess) ListProjects(context.Context, sdd.Principal) (sdd.ProjectList, error) {
-	return sdd.ProjectList{Projects: []sdd.ProjectSummary{{ProjectRef: a.runtime.Project(), CanRead: true, CanWrite: true, State: sdd.ProjectReady}}}, nil
-}
-
-func (a *observingAccess) ResolveProject(_ context.Context, principal sdd.Principal, _ sdd.ProjectID, access sdd.Access) (*sdd.ProjectRuntime, error) {
+func (a *observingAccess) ResolveProject(ctx context.Context, principal sdd.Principal, project sdd.ProjectID, access sdd.Access) (*sdd.ProjectRuntime, error) {
 	a.mu.Lock()
-	scopes := append([]string(nil), a.currentScopes[principal.Subject]...)
+	scopes := slices.Clone(a.currentScopes[principal.Subject])
 	a.mu.Unlock()
-	want := "project:read"
-	code := sdd.ErrorReadDenied
+	want, code := "project:read", sdd.ErrorReadDenied
 	if access == sdd.AccessWrite {
-		want = "project:write"
-		code = sdd.ErrorWriteDenied
+		want, code = "project:write", sdd.ErrorWriteDenied
 	}
-	if slices.Contains(scopes, want) {
-		return a.runtime, nil
+	if !slices.Contains(scopes, want) {
+		return nil, &sdd.ApplicationError{Code: code, Message: "scope denied"}
 	}
-	return nil, &sdd.ApplicationError{Code: code, Message: "scope denied"}
+	return a.rootAccess.ResolveProject(ctx, principal, project, access)
 }
 
-func (a *observingAccess) AuthorizeSession(ctx context.Context, request sdd.SessionAccessRequest) error {
-	return sdd.OwnerOnly(ctx, request)
-}
-
-func (a *observingAccess) ResolveDependency(context.Context, sdd.Principal, sdd.ProjectID, string) (*sdd.ProjectRuntime, error) {
-	return nil, &sdd.ApplicationError{Code: sdd.ErrorProjectUnavailable, Message: "dependency unavailable"}
-}
-
-func TestStatefulHTTPWorkflowResolvesIdentityPerRequest(t *testing.T) {
-	graphDir := filepath.Join(t.TempDir(), "graph")
-	fixturePath := filepath.Join(graphDir, "2026", "07", "13-120000-s-tac-idt.md")
-	if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fixturePath, []byte(`---
-type: signal
-kind: gap
-layer: tactical
-confidence: high
-summary: Identity mutation test anchor.
----
-
-The HTTP identity test anchors its real mutation here.
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	graph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "identity-test", GraphDir: graphDir, Branch: "main"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessions, err := localadapter.NewFilesystemSessionStoreAt(filepath.Join(t.TempDir(), "sessions"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	blobs, err := localadapter.NewFilesystemStagedBlobStoreAt(filepath.Join(t.TempDir(), "blobs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
-		Project: sdd.ProjectRef{ID: "identity-test", DisplayName: "Identity test"}, DefaultBranch: "main",
-		Graph: graph,
-		LLM: pkgllm.RunnerFunc(func(context.Context, pkgllm.Request) (pkgllm.Result, error) {
-			return pkgllm.Result{Text: `{"findings":[]}`, Identity: pkgllm.Identity{Provider: "test", Model: "test"}}, nil
-		}),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	access := &observingAccess{runtime: runtime}
-	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: access, Sessions: sessions, StagedBlobs: blobs})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server, err := New(Options{SearchSyncMode: sdd.SearchSyncAll, Application: application, Version: "test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	verifier := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
-		info := &auth.TokenInfo{Expiration: time.Now().Add(time.Hour)}
-		switch token {
-		case "read":
-			info.UserID = "christopher"
-			info.Scopes = []string{"project:read"}
-			info.Extra = map[string]any{"sentinel": "read-request"}
-		case "write":
-			info.UserID = "christopher"
-			info.Scopes = []string{"project:read", "project:write"}
-			info.Extra = map[string]any{"sentinel": "write-request"}
-		case "mallory":
-			info.UserID = "mallory"
-			info.Scopes = []string{"project:read", "project:write"}
-		default:
-			return nil, auth.ErrInvalidToken
-		}
-		return info, nil
-	}
-	httpServer := httptest.NewServer(auth.RequireBearerToken(verifier, nil)(server.Handler()))
-	defer httpServer.Close()
-
-	transport := &tokenTransport{token: "read", base: http.DefaultTransport}
-	client := mcp.NewClient(&mcp.Implementation{Name: "identity-client", Version: "test"}, nil)
-	clientSession, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
-		Endpoint: httpServer.URL, HTTPClient: &http.Client{Transport: transport}, DisableStandaloneSSE: true,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = clientSession.Close() }()
-	var door ServeResult
-	callIdentityTool(t, clientSession, "start_session", map[string]any{}, &door)
-	session := door.Session
-	var shown ShowResult
-	callIdentityTool(t, clientSession, "show", map[string]any{"session": session, "ids": []string{"20260713-120000-s-tac-idt"}}, &shown)
-	if !strings.Contains(shown.Entries, "anchors its real mutation") {
-		t.Fatalf("identity test anchor was not served through the real application: %q", shown.Entries)
-	}
-	transport.set("write")
-	var capture ServeResult
-	callIdentityTool(t, clientSession, "start_procedure", map[string]any{"session": session, "canonical": "capture"}, &capture)
-	callIdentityTool(t, clientSession, "next", map[string]any{"session": session, "instance": capture.Instance, "report": map[string]any{
-		"body":        "The real HTTP identity path authorizes this durable mutation using the current write-bearing request.",
-		"entryKind":   "gap",
-		"layer":       "tactical",
-		"refs":        []map[string]any{{"id": "20260713-120000-s-tac-idt", "kind": "related", "desc": "the identity test anchor"}},
-		"topics":      []string{"testing/identity"},
-		"confidence":  "high",
-		"widenReport": "inspected the identity test anchor before writing the mutation",
-	}}, &capture)
-	if capture.Step != "playback" {
-		t.Fatalf("capture assemble reached %q, want playback; missing=%v instructions=%q", capture.Step, capture.Missing, capture.Instructions)
-	}
-	callIdentityTool(t, clientSession, "next", map[string]any{"session": session, "instance": capture.Instance, "report": map[string]any{
-		"chooser": "playback", "choice": "confirm", "userWords": "confirm the identity-authorized mutation",
-	}}, &capture)
-	if capture.Step != "verifySummary" {
-		t.Fatalf("capture mutation reached %q, want verifySummary", capture.Step)
-	}
-	var search SearchResult
-	callIdentityTool(t, clientSession, "search", map[string]any{"session": session, "terms": []string{"durable", "mutation"}, "max_citations": 1}, &search)
-	if !strings.Contains(search.Results, "real HTTP identity path") {
-		t.Fatalf("durable mutation not visible through the application: %q", search.Results)
-	}
-
-	access.mu.Lock()
-	seen := append([]sdd.RequestIdentity(nil), access.seen...)
-	access.mu.Unlock()
-	var readSeen, writeSeen bool
-	for _, identity := range seen {
-		sentinel, _ := identity.Attributes["sentinel"].(string)
-		readSeen = readSeen || sentinel == "read-request" && len(identity.Scopes) == 1
-		writeSeen = writeSeen || sentinel == "write-request" && len(identity.Scopes) == 2
-	}
-	if !readSeen || !writeSeen {
-		t.Fatalf("root application identities did not follow requests: %+v", seen)
-	}
-
-	transport.set("mallory")
-	denied, err := clientSession.CallTool(t.Context(), &mcp.CallToolParams{Name: "search", Arguments: map[string]any{"session": session, "terms": []string{"identity"}}})
-	if err != nil {
-		t.Fatalf("calling search as another authenticated user: %v", err)
-	}
-	if !denied.IsError {
-		t.Fatal("another authenticated user accessed the existing SDD session")
-	}
-	encoded, err := json.Marshal(denied.Content)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), "owner") && !strings.Contains(string(encoded), "belong") {
-		t.Fatalf("expected a session ownership refusal, got %s", encoded)
-	}
-}
-
-func callIdentityTool[T any](t *testing.T, session *mcp.ClientSession, name string, arguments map[string]any, out *T) {
+func (a *observingAccess) requireIdentity(t *testing.T, want sdd.RequestIdentity) {
 	t.Helper()
-	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: arguments})
-	if err != nil {
-		t.Fatalf("%s: %v", name, err)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.seen) == 0 {
+		t.Fatal("request did not resolve its identity")
 	}
-	if result.IsError {
-		t.Fatalf("%s returned a tool error: %+v", name, result.Content)
+	for _, got := range a.seen {
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("request identity = %+v, want %+v", got, want)
+		}
 	}
-	raw, err := json.Marshal(result.StructuredContent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		t.Fatalf("decoding %s result: %v", name, err)
-	}
+	a.seen = nil
 }
