@@ -25,7 +25,6 @@ type tokenTransport struct {
 	mu    sync.RWMutex
 	token string
 	base  http.RoundTripper
-	last  int
 }
 
 func (t *tokenTransport) set(token string) {
@@ -41,19 +40,7 @@ func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	clone.Header = req.Header.Clone()
 	clone.Header.Set("Authorization", "Bearer "+token)
-	response, err := t.base.RoundTrip(clone)
-	if response != nil {
-		t.mu.Lock()
-		t.last = response.StatusCode
-		t.mu.Unlock()
-	}
-	return response, err
-}
-
-func (t *tokenTransport) lastStatus() int {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.last
+	return t.base.RoundTrip(clone)
 }
 
 func TestStreamableHTTPUsesCurrentRequestIdentity(t *testing.T) {
@@ -97,7 +84,7 @@ func TestStreamableHTTPUsesCurrentRequestIdentity(t *testing.T) {
 	}
 	handler := auth.RequireBearerToken(verifier, nil)(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
-	}, &mcp.StreamableHTTPOptions{JSONResponse: true}))
+	}, &mcp.StreamableHTTPOptions{JSONResponse: true, Stateless: true}))
 	httpServer := httptest.NewServer(handler)
 	defer httpServer.Close()
 
@@ -140,12 +127,12 @@ func TestStreamableHTTPUsesCurrentRequestIdentity(t *testing.T) {
 	}
 
 	roundTripper.set("mallory")
-	_, err = session.CallTool(t.Context(), &mcp.CallToolParams{Name: "engine_query"})
-	if err == nil {
-		t.Fatal("changed user should be rejected on the existing MCP session")
-	}
-	if got := roundTripper.lastStatus(); got != http.StatusForbidden {
-		t.Fatalf("changed user returned HTTP %d, want 403: %v", got, err)
+	call("engine_query")
+	mu.Lock()
+	last := observations[len(observations)-1]
+	mu.Unlock()
+	if last.identity.Subject != "mallory" {
+		t.Fatalf("request retained another caller's identity: %+v", last.identity)
 	}
 }
 
@@ -328,12 +315,19 @@ The HTTP identity test anchors its real mutation here.
 	}
 
 	transport.set("mallory")
-	_, err = clientSession.CallTool(t.Context(), &mcp.CallToolParams{Name: "search", Arguments: map[string]any{"terms": []string{"identity"}}})
-	if err == nil {
-		t.Fatal("changed user should be rejected on the existing real SDD session")
+	denied, err := clientSession.CallTool(t.Context(), &mcp.CallToolParams{Name: "search", Arguments: map[string]any{"session": session, "terms": []string{"identity"}}})
+	if err != nil {
+		t.Fatalf("calling search as another authenticated user: %v", err)
 	}
-	if got := transport.lastStatus(); got != http.StatusForbidden {
-		t.Fatalf("changed user returned HTTP %d, want 403: %v", got, err)
+	if !denied.IsError {
+		t.Fatal("another authenticated user accessed the existing SDD session")
+	}
+	encoded, err := json.Marshal(denied.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "owner") && !strings.Contains(string(encoded), "belong") {
+		t.Fatalf("expected a session ownership refusal, got %s", encoded)
 	}
 }
 

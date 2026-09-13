@@ -410,7 +410,6 @@ func (s *Server) registerTools() {
 }
 
 // attachedSession returns the named session locked and replayed from its ledger.
-// The first load stamps the attachment; later requests only refresh the replay.
 func (s *Server) attachedSession(ctx context.Context, req *mcp.CallToolRequest, session string) (*shellSession, error) {
 	id := sdd.SessionID(strings.TrimSpace(session))
 	if id == "" {
@@ -418,9 +417,7 @@ func (s *Server) attachedSession(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 	ss := s.sessions.get(id)
 	if ss == nil {
-		workflow, err := s.app.LoadWorkflow(ctx, s.requestIdentity(req), sdd.WorkflowResumeRequest{
-			SessionID: id, ClientName: mcpClientName(req.Session), ClientVersion: mcpClientVersion(req.Session),
-		})
+		workflow, err := s.app.RefreshWorkflow(ctx, s.requestIdentity(req), id)
 		if err != nil {
 			return nil, err
 		}

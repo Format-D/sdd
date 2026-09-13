@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,7 +26,6 @@ type httpReplica struct{ handler http.Handler }
 
 func TestStatelessHTTPAlternatesWarmReplicasAndRestarts(t *testing.T) {
 	options := func(opts *mcpserver.Options) {
-		opts.StatelessHTTP = true
 		opts.LocalIdentity = sdd.RequestIdentity{}
 	}
 	first := newTestServer(t, nil, "", "", options)
@@ -49,8 +49,7 @@ func TestStatelessHTTPAlternatesWarmReplicasAndRestarts(t *testing.T) {
 	var bogusHeader atomic.Bool
 	client := mcp.NewClient(&mcp.Implementation{Name: "stateless-test", Version: "test"}, nil)
 	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{
-		Endpoint:             endpoint.URL,
-		DisableStandaloneSSE: true,
+		Endpoint: endpoint.URL,
 		HTTPClient: &http.Client{Transport: statelessRoundTripper(func(req *http.Request) (*http.Response, error) {
 			request := req.Clone(req.Context())
 			request.Header = req.Header.Clone()
@@ -75,7 +74,37 @@ func TestStatelessHTTPAlternatesWarmReplicasAndRestarts(t *testing.T) {
 	}()
 
 	door := openSession(t, session)
+	stored, err := first.sessions.Load(t.Context(), sdd.SessionID(door.Session))
+	if err != nil {
+		t.Fatal(err)
+	}
 	active.Store(b)
+	var info mcpserver.InfoResult
+	call(t, session, "info", map[string]any{"session": door.Session}, &info)
+	afterRead, err := first.sessions.Load(t.Context(), stored.Metadata.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored, afterRead) {
+		t.Fatal("a read on a fresh replica changed the stored session")
+	}
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		request, err := http.NewRequestWithContext(t.Context(), method, endpoint.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer tester")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("%s returned %d, want 405", method, response.StatusCode)
+		}
+	}
 	bogusHeader.Store(true)
 	var capture mcpserver.ServeResult
 	call(t, session, "start_procedure", map[string]any{"session": door.Session, "canonical": "capture"}, &capture)
