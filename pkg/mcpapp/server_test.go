@@ -255,7 +255,7 @@ type testEnv struct {
 	srv         *mcpserver.Server
 	graphDir    string
 	sessionsDir string
-	sessions    *localadapter.FilesystemSessionStore
+	sessions    sdd.SessionStore
 	targets     *testBranchTargets
 }
 
@@ -315,16 +315,21 @@ func (t *testBranchTargets) setError(branch string, err error) {
 	t.mu.Unlock()
 }
 
+type testServerOptions struct {
+	Application sdd.ApplicationOptions
+	MCP         mcpserver.Options
+}
+
 var testRuntimeGeneration atomic.Int64
 
 // newTestServer builds a server over a fixture graph with deterministic
 // pre-flight findings and text-mode search. Passing existing dirs re-hosts
 // them on a fresh server (the restart scenario); mutate tweaks Options.
-func newTestServer(t *testing.T, findings []query.Finding, graphDir, sessionsDir string, mutate ...func(*mcpserver.Options)) testEnv {
+func newTestServer(t *testing.T, findings []query.Finding, graphDir, sessionsDir string, mutate ...func(*testServerOptions)) testEnv {
 	return newTestServerConfig(t, findings, graphDir, sessionsDir, "", mutate...)
 }
 
-func newTestServerConfig(t *testing.T, findings []query.Finding, graphDir, sessionsDir, language string, mutate ...func(*mcpserver.Options)) testEnv {
+func newTestServerConfig(t *testing.T, findings []query.Finding, graphDir, sessionsDir, language string, mutate ...func(*testServerOptions)) testEnv {
 	t.Helper()
 	if graphDir == "" {
 		graphDir = writeFixtureGraph(t)
@@ -378,37 +383,59 @@ func newTestServerConfig(t *testing.T, findings []query.Finding, graphDir, sessi
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: rootAccess{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs, Clock: sdd.ClockFunc(func() time.Time { return now })})
-	if err != nil {
-		t.Fatal(err)
-	}
-	opts := mcpserver.Options{SearchSyncMode: sdd.SearchSyncAll,
-		Application: application, LocalIdentity: sdd.RequestIdentity{Subject: "tester"}, Version: "test",
+	opts := testServerOptions{
+		Application: sdd.ApplicationOptions{Access: rootAccess{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs, Clock: sdd.ClockFunc(func() time.Time { return now })},
+		MCP:         mcpserver.Options{SearchSyncMode: sdd.SearchSyncAll, LocalIdentity: sdd.RequestIdentity{Subject: "tester"}, Version: "test"},
 	}
 	for _, m := range mutate {
 		m(&opts)
 	}
-	srv, err := mcpserver.New(opts)
+	application, err := sdd.NewApplication(opts.Application)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testEnv{srv: srv, graphDir: graphDir, sessionsDir: sessionsDir, sessions: sessions, targets: targets}
+	opts.MCP.Application = application
+	srv, err := mcpserver.New(opts.MCP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			t.Errorf("shutting down MCP server: %v", err)
+		}
+	})
+	return testEnv{srv: srv, graphDir: graphDir, sessionsDir: sessionsDir, sessions: opts.Application.Sessions, targets: targets}
 }
 
-// connect attaches an in-memory client session to the server.
-func connect(t *testing.T, srv *mcpserver.Server) *mcp.ClientSession {
+// connect uses an in-memory connection unless the caller supplies a transport.
+func connect(t *testing.T, srv *mcpserver.Server, transports ...mcp.Transport) *mcp.ClientSession {
 	t.Helper()
 	ctx := t.Context()
-	serverTransport, clientTransport := mcp.NewInMemoryTransports()
-	if _, err := srv.Connect(ctx, serverTransport); err != nil {
-		t.Fatal(err)
+	var transport mcp.Transport
+	switch len(transports) {
+	case 0:
+		serverTransport, clientTransport := mcp.NewInMemoryTransports()
+		if _, err := srv.Connect(ctx, serverTransport); err != nil {
+			t.Fatal(err)
+		}
+		transport = clientTransport
+	case 1:
+		transport = transports[0]
+	default:
+		t.Fatal("connect accepts at most one transport")
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "test"}, nil)
-	cs, err := client.Connect(ctx, clientTransport, nil)
+	cs, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cs.Close() })
+	t.Cleanup(func() {
+		if err := cs.Close(); err != nil {
+			t.Errorf("closing MCP client: %v", err)
+		}
+	})
 	return cs
 }
 
@@ -429,13 +456,47 @@ func openSession(t *testing.T, cs *mcp.ClientSession) mcpserver.ServeResult {
 func call[T any](t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any, out *T) {
 	t.Helper()
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: tool, Arguments: args})
+	checkToolCall(t, tool, res, err)
+	decodeStructured(t, res, out)
+}
+
+func checkToolCall(t *testing.T, tool string, result *mcp.CallToolResult, err error) {
+	t.Helper()
 	if err != nil {
 		t.Fatalf("%s: %v", tool, err)
 	}
-	if res.IsError {
-		t.Fatalf("%s returned tool error: %s", tool, contentText(res))
+	if result.IsError {
+		t.Fatalf("%s returned tool error: %s", tool, contentText(result))
 	}
-	decodeStructured(t, res, out)
+}
+
+// callAsync returns a function that joins the call and decodes its result on the test goroutine.
+func callAsync[T any](t *testing.T, cs *mcp.ClientSession, tool string, args map[string]any) func() T {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancel)
+	type reply struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+		done <- reply{result: result, err: err}
+	}()
+	return func() T {
+		t.Helper()
+		defer cancel()
+		var value T
+		select {
+		case got := <-done:
+			checkToolCall(t, tool, got.result, got.err)
+			decodeStructured(t, got.result, &value)
+		case <-ctx.Done():
+			t.Fatalf("waiting for %s: %v", tool, ctx.Err())
+		}
+		return value
+	}
 }
 
 // callExpectError invokes a tool expecting a tool error; returns its text.
@@ -2872,7 +2933,7 @@ func TestReadAttachmentPaging(t *testing.T) {
 // TestReadAttachmentLocalPath checks that a local (stdio) client gets the
 // absolute path alongside the content, so it can read the file directly.
 func TestReadAttachmentLocalPath(t *testing.T) {
-	env := newTestServer(t, nil, "", "", func(o *mcpserver.Options) { o.LocalClient = true })
+	env := newTestServer(t, nil, "", "", func(o *testServerOptions) { o.MCP.LocalClient = true })
 	cs := connect(t, env.srv)
 	session := openSession(t, cs).Session
 
@@ -3504,7 +3565,7 @@ func (s configuredReadStore) AcquireSnapshot(ctx context.Context, q sdd.Snapshot
 }
 
 func TestBoundInfoAndAttachmentPathUseSelectedSource(t *testing.T) {
-	env := newTestServer(t, nil, "", "", func(o *mcpserver.Options) { o.LocalClient = true })
+	env := newTestServer(t, nil, "", "", func(o *testServerOptions) { o.MCP.LocalClient = true })
 	branchDir := t.TempDir()
 	relative, err := sdd.AttachmentDirRelPath(fixtureGapID)
 	if err != nil {

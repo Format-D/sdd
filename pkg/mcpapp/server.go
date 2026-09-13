@@ -98,7 +98,7 @@ func (s *Server) refuseWhileClosing(next mcp.MethodHandler) mcp.MethodHandler {
 	}
 }
 
-// Handler returns the shared Streamable HTTP application without choosing an
+// Handler returns the stateless Streamable HTTP application without choosing an
 // authentication protocol. External compositions must place authenticated
 // middleware in front of it and populate the SDK's current-request TokenInfo.
 func (s *Server) Handler() http.Handler {
@@ -109,9 +109,10 @@ func (s *Server) Handler() http.Handler {
 		// preserves a public Host while forwarding to localhost. Authentication
 		// is deliberately host-owned and mandatory for such deployments.
 		DisableLocalhostProtection: true,
+		Stateless:                  true,
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.isClosing() && r.Header.Get("Mcp-Session-Id") == "" {
+		if s.isClosing() {
 			http.Error(w, ErrServerClosing.Error(), http.StatusServiceUnavailable)
 			return
 		}

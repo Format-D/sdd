@@ -276,6 +276,22 @@ func (a *Application) LoadWorkflow(ctx context.Context, identity RequestIdentity
 	if err != nil {
 		return nil, err
 	}
+	return a.replayWorkflow(ctx, identity, runtime, stored)
+}
+
+// RefreshWorkflow replays an authorized session without changing its attachment stamp.
+func (a *Application) RefreshWorkflow(ctx context.Context, identity RequestIdentity, id SessionID) (*WorkflowSession, error) {
+	_, runtime, stored, err := a.resolveSession(ctx, identity, id, AccessRead)
+	if err != nil {
+		return nil, err
+	}
+	if end := stored.Metadata.Ended; end != nil {
+		return nil, endedSessionError(stored.Metadata, *end)
+	}
+	return a.replayWorkflow(ctx, identity, runtime, stored)
+}
+
+func (a *Application) replayWorkflow(ctx context.Context, identity RequestIdentity, runtime *ProjectRuntime, stored StoredSession) (*WorkflowSession, error) {
 	w, err := a.newWorkflow(ctx, identity, runtime.options.Project.ID, sessionBindingFrom(stored), stored.Metadata.Branch)
 	if err != nil {
 		return nil, err
@@ -291,9 +307,9 @@ func (a *Application) LoadWorkflow(ctx context.Context, identity RequestIdentity
 		return nil, err
 	}
 	resolve := func(canonical string) (*engine.Spec, error) { return w.loadProcedure(canonical) }
-	w.session, err = w.engine.ReplaySession(string(request.SessionID), stored.Metadata.Participant, events, resolve, w.sink)
+	w.session, err = w.engine.ReplaySession(string(stored.Metadata.ID), stored.Metadata.Participant, events, resolve, w.sink)
 	if err != nil {
-		return nil, fmt.Errorf("replaying session %s: %w", request.SessionID, err)
+		return nil, fmt.Errorf("replaying session %s: %w", stored.Metadata.ID, err)
 	}
 	if err := w.ensureShell(); err != nil {
 		return nil, err
@@ -1276,24 +1292,12 @@ func (w *WorkflowSession) appendStoredEvent(code string, payload json.RawMessage
 	return w.appendStoredEvents([]StoredEvent{{CodecVersion: SessionCodecVersion, Code: code, Payload: payload}})
 }
 
-// appendStoredEvents appends the session's own events in one CAS append with
-// the activity stamp. A version race (another consumer of the same handle
-// appended under us) is absorbed once: resync the observed version and retry;
-// a second conflict surfaces with the way on.
+// appendStoredEvents refuses events computed before another writer changed the session.
 func (w *WorkflowSession) appendStoredEvents(events []StoredEvent) error {
 	err := w.appendStoredEventsOnce(events)
 	var appErr *ApplicationError
-	if !errors.As(err, &appErr) || appErr.Code != ErrorSessionConflict {
-		return err
-	}
-	if err := w.resyncBindingVersion(); err != nil {
-		return err
-	}
-	err = w.appendStoredEventsOnce(events)
 	if errors.As(err, &appErr) && appErr.Code == ErrorSessionConflict {
-		// The retry lost too — surface the conflict with a next step rather than a
-		// dead-end "version changed".
-		return &ApplicationError{Code: ErrorSessionConflict, Message: appErr.Message + " — " + reorientSuffix}
+		return fmt.Errorf("%w; %s", err, reorientSuffix)
 	}
 	return err
 }
