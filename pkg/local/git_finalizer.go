@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,14 +36,58 @@ func (f GitFinalizer) Finalize(ctx context.Context, mutation app.AppliedMutation
 		return err
 	}
 	defer unlock(lock)
-	return f.finalizeLocked(ctx, mutation)
+	if f.Timeout <= 0 {
+		f.Timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, f.Timeout)
+	defer cancel()
+	revision, err := f.lookupTrailer(ctx, "SDD-Publication: "+mutation.BatchID)
+	if err != nil {
+		return err
+	}
+	if revision != "" {
+		return nil
+	}
+	if published, err := f.matchesLegacyPublication(ctx, mutation); err != nil || published {
+		return err
+	}
+	return f.finalizeLocked(ctx, mutation, "SDD-Mutation: "+mutation.BatchID)
 }
 
-func (f GitFinalizer) lookupRevision(ctx context.Context, mutationID string) (string, error) {
+func (f GitFinalizer) matchesLegacyPublication(ctx context.Context, mutation app.AppliedMutation) (bool, error) {
+	if !strings.HasPrefix(mutation.BatchID, "v1:") || mutation.Revision == "" {
+		return false, nil
+	}
+	out, err := exec.CommandContext(ctx, "git", "-C", f.Checkout, "show", "--no-patch", "--format=%B", mutation.Revision, "--").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("git finalizer publication revision: %s (%w)", strings.TrimSpace(string(out)), err)
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		legacy, ok := strings.CutPrefix(line, "SDD-Mutation: ")
+		if !ok {
+			continue
+		}
+		parts := strings.Split(legacy, "/")
+		if len(parts) != 3 {
+			continue
+		}
+		sequence, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		key := app.PublicationKey{Session: app.SessionID(parts[0]), Sequence: sequence, Discriminator: parts[2]}
+		if key.Validate() == nil && key.String() == mutation.BatchID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f GitFinalizer) lookupTrailer(ctx context.Context, trailer string) (string, error) {
 	if strings.TrimSpace(f.Branch) == "" {
 		return "", fmt.Errorf("git finalizer: concrete branch is required")
 	}
-	trailerPattern := "^" + regexp.QuoteMeta("SDD-Mutation: "+mutationID) + "$"
+	trailerPattern := "^" + regexp.QuoteMeta(trailer) + "$"
 	out, err := exec.CommandContext(ctx, "git", "-C", f.Checkout, "log", f.Branch, "--extended-regexp", "--grep="+trailerPattern, "--format=%H", "-n", "1").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git finalizer log: %s (%w)", strings.TrimSpace(string(out)), err)
@@ -50,14 +95,13 @@ func (f GitFinalizer) lookupRevision(ctx context.Context, mutationID string) (st
 	return strings.TrimSpace(string(out)), nil
 }
 
-func (f GitFinalizer) finalizeLocked(ctx context.Context, mutation app.AppliedMutation) error {
+func (f GitFinalizer) finalizeLocked(ctx context.Context, mutation app.AppliedMutation, trailer string) error {
 	if f.Timeout <= 0 {
 		f.Timeout = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(ctx, f.Timeout)
 	defer cancel()
-	trailer := "SDD-Mutation: " + mutation.BatchID
-	revision, err := f.lookupRevision(ctx, mutation.BatchID)
+	revision, err := f.lookupTrailer(ctx, trailer)
 	if err != nil {
 		return err
 	}

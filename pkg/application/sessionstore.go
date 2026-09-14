@@ -205,6 +205,15 @@ func endFromShellEvents(events []StoredEvent) *SessionEnd {
 			if event.TS.After(endedAt) {
 				endedAt = event.TS
 			}
+		case engine.EventMutationOutcome:
+			outcome, _ := event.Data["outcome"].(string)
+			returnStep, ok := event.Data["return_step"].(string)
+			if _, shell := shells[event.Instance]; shell && outcome == engine.MutationCancelled && ok && returnStep == "" {
+				shells[event.Instance] = true
+				if event.TS.After(endedAt) {
+					endedAt = event.TS
+				}
+			}
 		}
 	}
 	if len(shells) == 0 {

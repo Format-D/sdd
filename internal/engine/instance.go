@@ -41,6 +41,8 @@ type Instance struct {
 	// stalled gate re-evaluated by a later report doesn't re-run its side
 	// effect. Reset on every transition.
 	opDone bool
+	// interactionStep excludes reports at automatic operation steps.
+	interactionStep string
 	// dispatchSeed is the handoff a dispatching junction declared when its
 	// option was answered — child field ← parent field. The next child started
 	// under this instance inherits it (seedFromParent). Empty until a
@@ -339,6 +341,7 @@ func (s *Session) runCommand(inst *Instance, name string) error {
 			s.intent = &MutationIntent{Ref: position, Instance: inst.ID, Step: inst.Step, Command: name, Values: values}
 			s.intentStore = inst.Store.Clone()
 			s.intentDone = false
+			s.cancelled = nil
 		}
 		if s.intent.Instance != inst.ID || s.intent.Step != inst.Step || s.intent.Command != name {
 			return s.pendingError()

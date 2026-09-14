@@ -26,7 +26,7 @@ type FilesystemGraphStoreOptions struct {
 	// Branch is the authority assigned by the target acquirer, if branch-scoped.
 	Branch string
 	// PublicationGit makes a Git commit part of capture publication's success.
-	// Without it, this adapter acknowledges filesystem state only.
+	// Without it, publication acknowledges filesystem state and recognizes retries by entry ID only.
 	PublicationGit *GitFinalizer
 }
 

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -261,6 +263,92 @@ func newFixtureEnv(t *testing.T) *fixtureEnv {
 	// against fixtureRef2ID, which is never logged.
 	env.session.LogRead("show", []string{fixtureRefID}, nil)
 	return env
+}
+
+func (env *fixtureEnv) replay(t *testing.T) *Session {
+	t.Helper()
+	raw, err := json.Marshal(env.sink.events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []Event
+	if err := json.Unmarshal(raw, &events); err != nil {
+		t.Fatal(err)
+	}
+	for i := range events {
+		events[i].Position = env.sink.events[i].Position
+	}
+	session, err := env.engine.ReplaySession(env.session.ID, env.session.Participant, events,
+		func(string) (*Spec, error) { return env.spec, nil }, env.sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func (env *fixtureEnv) interruptWriteAfter(t *testing.T, interaction string, reportAtOp bool) *OperationError {
+	t.Helper()
+	if interaction != "playback" {
+		env.spec.StepByID["write"].Guard = nil
+		env.spec.StepByID["assemble"].Transitions[0].To = "write"
+	}
+	if interaction == "" {
+		env.spec.Steps = []*Step{env.spec.StepByID["write"]}
+	}
+	cmd, _ := env.engine.Registry.Command("fakeWrite")
+	preparations := 0
+	cmd.Prepare = func(*Context) (map[string]string, error) {
+		preparations++
+		if reportAtOp && preparations == 1 {
+			return nil, errors.New("preparation temporarily unavailable")
+		}
+		return map[string]string{"entryId": fmt.Sprintf("20260914-01000%d-s-tac-new", preparations)}, nil
+	}
+	cmd.Fn = func(*Context) error {
+		env.newCalls++
+		return errors.New("write interrupted")
+	}
+	_, err := env.session.Start(env.spec, nil, "")
+	if interaction != "" {
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = env.session.Report("i_1", fullDraft())
+		if interaction == "playback" {
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = env.session.Answer("i_1", "playback", "confirm", nil, "confirmed")
+		}
+	}
+	if reportAtOp {
+		if err == nil || env.session.PendingMutation() != nil {
+			t.Fatalf("preparation failure must precede intent: %v", err)
+		}
+		_, err = env.session.Report("i_1", map[string]any{"widenReport": fullDraft()["widenReport"]})
+	}
+	var operation *OperationError
+	if !errors.As(err, &operation) {
+		t.Fatalf("expected interrupted write, got %v", err)
+	}
+	return operation
+}
+
+func requireCancellationOutcome(t *testing.T, events []Event, returnStep string) {
+	t.Helper()
+	durable := 0
+	for _, event := range events {
+		if event.Event == EventServed {
+			continue
+		}
+		durable++
+		if event.Event != EventMutationOutcome || event.Data["outcome"] != MutationCancelled || event.Data["return_step"] != returnStep {
+			t.Fatalf("cancellation must record outcome and return together: %+v", event)
+		}
+	}
+	if durable != 1 {
+		t.Fatalf("cancellation appended %d durable events", durable)
+	}
 }
 
 // fullDraft is the one-shot batched report covering every assemble field.

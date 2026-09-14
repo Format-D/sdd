@@ -135,6 +135,7 @@ type config struct {
 	participant string
 	entries     []*model.Entry
 	branchDirs  map[string]string
+	finalizers  []sdd.MutationFinalizer
 }
 
 // Option configures NewWorld.
@@ -152,6 +153,11 @@ func WithEntries(entries ...*model.Entry) Option {
 // WithParticipant sets the resolved participant (default Christopher).
 func WithParticipant(name string) Option { return func(c *config) { c.participant = name } }
 
+// WithFinalizers configures required completion after publication.
+func WithFinalizers(finalizers ...sdd.MutationFinalizer) Option {
+	return func(c *config) { c.finalizers = append(c.finalizers, finalizers...) }
+}
+
 // WithBranchDir registers an additional branch backed by its own graph dir —
 // for procedures that route reads and writes by branch state (implementation's
 // work branches). The default branch main stays on the world's GraphDir.
@@ -167,8 +173,9 @@ func WithBranchDir(branch, dir string) Option {
 // branchTargets acquires per-branch graph stores, falling back to the default
 // branch's store for unknown branches.
 type branchTargets struct {
-	fallback sdd.GraphStore
-	graphs   map[string]sdd.GraphStore
+	fallback   sdd.GraphStore
+	graphs     map[string]sdd.GraphStore
+	finalizers []sdd.MutationFinalizer
 }
 
 func (b branchTargets) Acquire(_ context.Context, target sdd.MutationTarget) (*sdd.AcquiredTarget, error) {
@@ -176,7 +183,7 @@ func (b branchTargets) Acquire(_ context.Context, target sdd.MutationTarget) (*s
 	if !ok {
 		graph = b.fallback
 	}
-	return &sdd.AcquiredTarget{Target: target, Graph: graph, Release: func() error { return nil }}, nil
+	return &sdd.AcquiredTarget{Target: target, Graph: graph, Finalizers: b.finalizers, Release: func() error { return nil }}, nil
 }
 
 type branchReadStore struct {
@@ -261,10 +268,10 @@ func NewWorld(t *testing.T, opts ...Option) *World {
 	script := &LLMScript{Summary: "A generated summary."}
 	options := sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: "proctest"}, DefaultBranch: "main",
-		Graph: graph, LLM: script,
+		Graph: graph, LLM: script, Finalizers: cfg.finalizers,
 	}
 	if len(cfg.branchDirs) > 0 {
-		targets := branchTargets{fallback: graph, graphs: map[string]sdd.GraphStore{"main": graph}}
+		targets := branchTargets{fallback: graph, graphs: map[string]sdd.GraphStore{"main": graph}, finalizers: cfg.finalizers}
 		for branch, dir := range cfg.branchDirs {
 			store, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "proctest", GraphDir: dir, Branch: branch})
 			if err != nil {

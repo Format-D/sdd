@@ -237,6 +237,7 @@ type Session struct {
 	intent      *MutationIntent
 	intentStore *Store
 	intentDone  bool
+	cancelled   *MutationCancellation
 }
 
 // SessionOption configures a session.
@@ -586,6 +587,12 @@ func (s *Session) Report(instanceID string, fields map[string]any) (*Serve, erro
 		"step":   inst.Step,
 		"fields": logged,
 	})
+	if err := s.checkSink(); err != nil {
+		return nil, err
+	}
+	if inst.currentStep().Op == "" {
+		inst.interactionStep = inst.Step
+	}
 
 	if err := s.cascade(inst); err != nil {
 		return nil, err
@@ -670,6 +677,10 @@ func (s *Session) Answer(instanceID, chooser, choice string, fields map[string]a
 		data["fields"] = fields
 	}
 	s.appendEvent(inst.ID, EventChooserAnswer, data)
+	if err := s.checkSink(); err != nil {
+		return nil, err
+	}
+	inst.interactionStep = inst.Step
 
 	// A dispatching junction's declared handoff rides the answered option:
 	// stash it so the next child started under this instance inherits it.
@@ -849,12 +860,16 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		if _, err := inst.Store.WriteState(fields); err != nil {
 			return err
 		}
+		if inst.currentStep().Op == "" {
+			inst.interactionStep = inst.Step
+		}
 
 	case EventChooserAnswer:
 		inst, err := s.replayInstance(ev)
 		if err != nil {
 			return err
 		}
+		inst.interactionStep = inst.Step
 		// The answer's own effects were logged separately (op_result,
 		// transition); collected fields ride the answer event.
 		if fields, ok := ev.Data["fields"].(map[string]any); ok {
@@ -887,6 +902,19 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		if err != nil {
 			return err
 		}
+		if ev.Event == EventMutationOutcome {
+			if err := s.validateOutcome(ev); err != nil {
+				return err
+			}
+			if outcome, _ := ev.Data["outcome"].(string); outcome == MutationCancelled {
+				returnStep, ok := ev.Data["return_step"].(string)
+				if !ok || returnStep != inst.interactionStep {
+					return fmt.Errorf("cancelled outcome does not name its preceding interaction")
+				}
+				s.applyCancellation(inst, returnStep)
+				return nil
+			}
+		}
 		writes, _ := ev.Data["writes"].(map[string]any)
 		for name, v := range writes {
 			if err := inst.Store.importValue(name, ExportedValue{Value: v, Provenance: ProvenanceEngine}); err != nil {
@@ -900,9 +928,6 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 			}
 		}
 		if ev.Event == EventMutationOutcome {
-			if err := s.validateOutcome(ev); err != nil {
-				return err
-			}
 			s.intentDone = true
 		}
 

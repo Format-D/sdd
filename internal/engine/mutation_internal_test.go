@@ -2,6 +2,8 @@ package engine
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/networkteam/sdd/internal/query"
@@ -90,7 +92,119 @@ func TestRecordedInvocationReplay(t *testing.T) {
 			if pending := resumed.PendingMutation(); pending != nil {
 				t.Fatalf("successful outcome left pending work: %+v", pending)
 			}
+			if _, err := resumed.Cancel(started.Instance, refs[0]); err == nil {
+				t.Fatal("completed operation must not be cancelled")
+			}
 		})
+	}
+}
+
+func TestCancellationReturnsWithoutReexecuting(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		returnStep string
+		reportAtOp bool
+	}{
+		{name: "preceding chooser", returnStep: "playback"},
+		{name: "report at automatic op keeps preceding chooser", returnStep: "playback", reportAtOp: true},
+		{name: "preceding report", returnStep: "assemble"},
+		{name: "no preceding interaction"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFixtureEnv(t)
+			failure := env.interruptWriteAfter(t, tc.returnStep, tc.reportAtOp)
+			ref, originalID := failure.Intent.Ref, failure.Intent.Values["entryId"]
+			if !strings.Contains(failure.Error(), fmt.Sprintf("cancel_ref=%d", ref)) || !strings.Contains(failure.Error(), originalID) {
+				t.Fatalf("failure must supply cancellation and known identity: %v", failure)
+			}
+
+			resumed := env.replay(t)
+			before := len(env.sink.events)
+			cancelled, err := resumed.Cancel("i_1", ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantStatus := StatusRunning
+			if tc.returnStep == "" {
+				wantStatus = StatusAbandoned
+			}
+			if cancelled.Step != tc.returnStep || cancelled.Status != wantStatus || env.newCalls != 1 || resumed.PendingMutation() != nil {
+				t.Fatalf("cancellation = %+v, attempts=%d pending=%+v", cancelled, env.newCalls, resumed.PendingMutation())
+			}
+			requireCancellationOutcome(t, env.sink.events[before:], tc.returnStep)
+
+			resumed = env.replay(t)
+			before = len(env.sink.events)
+			if _, err := resumed.Cancel("i_1", ref); err != nil {
+				t.Fatalf("lost cancellation response must be repeatable: %v", err)
+			}
+			for _, event := range env.sink.events[before:] {
+				if event.Event != EventServed {
+					t.Fatalf("repeated cancellation changed durable state: %+v", event)
+				}
+			}
+			if _, err := resumed.Retry("i_1", ref); err == nil || env.newCalls != 1 {
+				t.Fatalf("cancelled operation retried: %v, attempts=%d", err, env.newCalls)
+			}
+			if tc.returnStep == "" {
+				return
+			}
+			inst, _ := resumed.Instance("i_1")
+			if body, _ := inst.Store.Get("body"); body != fullDraft()["body"] {
+				t.Fatalf("cancellation lost accepted input: %v", body)
+			}
+
+			if tc.returnStep == "playback" {
+				_, err = resumed.Answer("i_1", "playback", "confirm", nil, "try a fresh operation")
+			} else {
+				_, err = resumed.Report("i_1", map[string]any{"body": fullDraft()["body"]})
+			}
+			var fresh *OperationError
+			if !errors.As(err, &fresh) || fresh.Intent.Ref == ref || fresh.Intent.Values["entryId"] == originalID || env.newCalls != 2 {
+				t.Fatalf("fresh interaction must create a new invocation: %v, attempts=%d", err, env.newCalls)
+			}
+			if _, err := resumed.Retry("i_1", ref); err == nil || env.newCalls != 2 {
+				t.Fatalf("old reference dispatched after fresh intent: %v, attempts=%d", err, env.newCalls)
+			}
+		})
+	}
+}
+
+func TestCancellationAppendFailureKeepsOperationPending(t *testing.T) {
+	env := newFixtureEnv(t)
+	ref := env.interruptWriteAfter(t, "playback", false).Intent.Ref
+	env.sink.failWith, env.sink.reject = errors.New("cancellation append unavailable"), EventMutationOutcome
+	if _, err := env.session.Cancel("i_1", ref); err == nil || env.session.CancelledMutation() != nil {
+		t.Fatalf("failed cancellation reported completion: %v", err)
+	}
+	env.sink.failWith = nil
+	resumed := env.replay(t)
+	if pending := resumed.PendingMutation(); pending == nil || pending.Ref != ref {
+		t.Fatalf("lost pending invocation: %+v", pending)
+	}
+	if _, err := resumed.Cancel("i_1", ref); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCancellationRequiresLatestPendingReference(t *testing.T) {
+	env := newFixtureEnv(t)
+	intent := env.interruptWriteAfter(t, "playback", false).Intent
+	for _, tc := range []struct {
+		instance string
+		ref      uint64
+	}{
+		{instance: intent.Instance, ref: intent.Ref - 1},
+		{instance: intent.Instance, ref: intent.Ref + 1},
+		{instance: "i_other", ref: intent.Ref},
+	} {
+		before := len(env.sink.events)
+		if _, err := env.session.Cancel(tc.instance, tc.ref); err == nil {
+			t.Fatalf("cancelled mismatched invocation: %+v", tc)
+		}
+		if len(env.sink.events) != before || env.session.PendingMutation().Ref != intent.Ref || env.newCalls != 1 {
+			t.Fatal("invalid cancellation changed the pending invocation")
+		}
 	}
 }
 

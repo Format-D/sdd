@@ -37,7 +37,11 @@ func (s *FilesystemGraphStore) lookupEntryPublicationLocked(ctx context.Context,
 		return app.EntryPublication{}, false, err
 	}
 	if s.publicationGit != nil {
-		revision, err := s.publicationGit.lookupRevision(ctx, key.String())
+		revision, err := s.publicationGit.lookupTrailer(ctx, "SDD-Publication: "+key.String())
+		if err == nil && revision == "" {
+			legacy := fmt.Sprintf("SDD-Mutation: %s/%d/%s", key.Session, key.Sequence, key.Discriminator)
+			revision, err = s.publicationGit.lookupTrailer(ctx, legacy)
+		}
 		if err != nil || revision == "" {
 			return app.EntryPublication{}, false, err
 		}
@@ -118,10 +122,11 @@ func (s *FilesystemGraphStore) PublishEntry(ctx context.Context, key app.Publica
 	for _, filename := range publication.Document.Attachments {
 		actual.Attachments = append(actual.Attachments, app.AttachmentMaterialization{SourceName: filename, LogicalPath: path.Join(attachmentDir, filename)})
 	}
-	if err := s.publicationGit.finalizeLocked(ctx, app.AppliedMutation{Project: s.project, BatchID: key.String(), Batch: actual}); err != nil {
+	trailer := "SDD-Publication: " + key.String()
+	if err := s.publicationGit.finalizeLocked(ctx, app.AppliedMutation{Project: s.project, BatchID: key.String(), Batch: actual}, trailer); err != nil {
 		return app.EntryPublication{}, err
 	}
-	revision, err := s.publicationGit.lookupRevision(ctx, key.String())
+	revision, err := s.publicationGit.lookupTrailer(ctx, trailer)
 	if err != nil {
 		return app.EntryPublication{}, err
 	}

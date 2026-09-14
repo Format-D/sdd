@@ -21,6 +21,10 @@ func TestCapturePublicationReturnsOriginalCommitAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	message := repo.git("log", "-1", "--format=%B")
+	if !strings.Contains(message, "SDD-Publication: "+key.String()) || strings.Contains(message, string(key.Session)) {
+		t.Fatalf("commit must carry the opaque publication ID without a session handle: %q", message)
+	}
 	repo.write("README", "Another session advanced the branch.\n")
 	repo.git("add", "README")
 	repo.git("commit", "-m", "test: advance unrelated state")

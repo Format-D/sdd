@@ -22,12 +22,30 @@ type OperationError struct {
 }
 
 func (e *OperationError) Error() string {
-	return fmt.Sprintf("%v; %s", e.Err, e.Intent.RetryInstructions())
+	return fmt.Sprintf("%v; %s", e.Err, e.Intent.ContinuationInstructions())
 }
 func (e *OperationError) Unwrap() error { return e.Err }
 
-func (m MutationIntent) RetryInstructions() string {
-	return fmt.Sprintf("retry with next(instance=%q, retry_ref=%d) without resending the report", m.Instance, m.Ref)
+func (m MutationIntent) ContinuationInstructions() string {
+	return fmt.Sprintf("operation %q recorded values %v; retry with next(instance=%q, retry_ref=%d) or cancel with next(instance=%q, cancel_ref=%d), without resending the report. Retry uses the recorded input and identifiers. Cancel leaves existing or uncertain effects in place.", m.Command, m.Values, m.Instance, m.Ref, m.Instance, m.Ref)
+}
+
+const MutationCancelled = "cancelled"
+
+// MutationCancellation records where an unfinished invocation returned without undoing effects.
+type MutationCancellation struct {
+	Intent     MutationIntent
+	ReturnStep string
+}
+
+// CancelledMutation returns the latest invocation's cancellation, if it was cancelled.
+func (s *Session) CancelledMutation() *MutationCancellation {
+	if s.cancelled == nil {
+		return nil
+	}
+	result := *s.cancelled
+	result.Intent.Values = maps.Clone(result.Intent.Values)
+	return &result
 }
 
 // PendingMutation returns the unresolved invocation, without executing it.
@@ -72,6 +90,9 @@ func (s *Session) Retry(instance string, ref uint64) (*Serve, error) {
 	if s.intent == nil || s.intent.Ref != ref || s.intent.Instance != instance {
 		return nil, fmt.Errorf("retry_ref %d is not the session's latest invocation for %s; resume the session", ref, instance)
 	}
+	if s.cancelled != nil {
+		return nil, fmt.Errorf("operation %d was cancelled; its effects were left in place, and it cannot be retried", ref)
+	}
 	inst, ok := s.Instance(instance)
 	if !ok {
 		return nil, fmt.Errorf("instance %q not found", instance)
@@ -86,6 +107,45 @@ func (s *Session) Retry(instance string, ref uint64) (*Serve, error) {
 		return nil, err
 	}
 	return s.serve(inst)
+}
+
+// Cancel records the outcome and return position atomically, without running commands.
+func (s *Session) Cancel(instance string, ref uint64) (*Serve, error) {
+	if err := s.checkSink(); err != nil {
+		return nil, err
+	}
+	if s.intent == nil || s.intent.Ref != ref || s.intent.Instance != instance {
+		return nil, fmt.Errorf("cancel_ref %d is not the session's latest invocation for %s; resume the session", ref, instance)
+	}
+	inst, ok := s.Instance(instance)
+	if !ok {
+		return nil, fmt.Errorf("instance %q not found", instance)
+	}
+	if s.cancelled == nil {
+		if s.intentDone {
+			return nil, fmt.Errorf("operation %d already completed and cannot be cancelled", ref)
+		}
+		s.appendEvent(instance, EventMutationOutcome, map[string]any{
+			"intent_ref": ref, "step": s.intent.Step, "fn": s.intent.Command,
+			"outcome": MutationCancelled, "return_step": inst.interactionStep,
+		})
+		if err := s.checkSink(); err != nil {
+			return nil, err
+		}
+		s.applyCancellation(inst, inst.interactionStep)
+	}
+	return s.serveWith(inst, true)
+}
+
+func (s *Session) applyCancellation(inst *Instance, returnStep string) {
+	s.cancelled = &MutationCancellation{Intent: *s.intent, ReturnStep: returnStep}
+	s.intentDone = true
+	inst.opDone = false
+	if returnStep == "" {
+		inst.Status, inst.Outcome = StatusAbandoned, MutationCancelled
+		return
+	}
+	inst.Step = returnStep
 }
 
 func (s *Session) restoreIntent(event Event) error {
@@ -114,6 +174,7 @@ func (s *Session) restoreIntent(event Event) error {
 	s.intent = &MutationIntent{Ref: event.Position, Instance: inst.ID, Step: data.Step, Command: data.Command, Values: data.Values}
 	s.intentStore = inst.Store.Clone()
 	s.intentDone = false
+	s.cancelled = nil
 	return nil
 }
 

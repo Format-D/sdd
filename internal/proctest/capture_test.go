@@ -39,9 +39,9 @@ func captureFixtureEntries() []*model.Entry {
 
 // newCaptureWorld opens a session over the capture fixtures that has read the
 // primary ref in full, so drafts against captureRefID pass refsInspected.
-func newCaptureWorld(t *testing.T, connID string) (*proctest.World, *proctest.Session) {
+func newCaptureWorld(t *testing.T, connID string, options ...proctest.Option) (*proctest.World, *proctest.Session) {
 	t.Helper()
-	world := proctest.NewWorld(t, proctest.WithEntries(captureFixtureEntries()...))
+	world := proctest.NewWorld(t, append(options, proctest.WithEntries(captureFixtureEntries()...))...)
 	session := world.Open(t, connID)
 	session.LogRead(t, "show", []string{captureRefID}, nil)
 	return world, session

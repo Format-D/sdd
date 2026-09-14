@@ -56,9 +56,10 @@ type StartProcedureArgs struct {
 }
 
 type NextArgs struct {
-	RetryRef uint64 `json:"retry_ref,omitempty" jsonschema:"exact retry reference from a failed operation; omit report to continue that invocation"`
-	Session  string `json:"session,omitempty" jsonschema:"session handle this connection is attached to (from start_session or resume_session); required — carry it across context compaction"`
-	Instance string `json:"instance" jsonschema:"instance handle from start_procedure"`
+	RetryRef  uint64 `json:"retry_ref,omitempty" jsonschema:"exact retry reference from a failed operation; mutually exclusive with report and cancel_ref"`
+	CancelRef uint64 `json:"cancel_ref,omitempty" jsonschema:"exact cancellation reference from a failed operation; leaves effects in place and returns to the preceding interaction; mutually exclusive with report and retry_ref"`
+	Session   string `json:"session,omitempty" jsonschema:"session handle this connection is attached to (from start_session or resume_session); required — carry it across context compaction"`
+	Instance  string `json:"instance" jsonschema:"instance handle from start_procedure"`
 	// Report carries either state fields for the current step (per the served
 	// report_schema) or a chooser answer {chooser, choice, userWords?, fields?}.
 	Report map[string]any `json:"report,omitempty" jsonschema:"state fields per the served report_schema, or a chooser answer object {chooser, choice, userWords?, fields?}"`
@@ -125,7 +126,8 @@ type ServeResult struct {
 	Missing          []string                      `json:"missing,omitempty" jsonschema:"required report fields not yet provided"`
 	ReportSchema     map[string]any                `json:"report_schema,omitempty" jsonschema:"JSON Schema for the current step's report"`
 	PendingChooser   *ChooserResult                `json:"pending_chooser,omitempty"`
-	PendingOperation *sdd.WorkflowPendingOperation `json:"pending_operation,omitempty" jsonschema:"unfinished recorded operation; use its instance and retry_ref with next and no report"`
+	PendingOperation *sdd.WorkflowPendingOperation `json:"pending_operation,omitempty" jsonschema:"unfinished recorded operation; use its instance with retry_ref or cancel_ref in next, without report"`
+	Cancellation     *sdd.WorkflowCancellation     `json:"cancellation,omitempty" jsonschema:"recorded cancellation, return position and effects left in place"`
 	Execution        string                        `json:"execution,omitempty" jsonschema:"execution hint for this instance; fork-preferred means the procedure is a task best run in a disposable forked context"`
 	Produced         map[string]string             `json:"produced,omitempty" jsonschema:"engine-written results on completion (e.g. the created entry ID)"`
 	Framing          string                        `json:"framing,omitempty" jsonschema:"session framing (aspirations, directives, focus, participants); served when its content is new to this connection, omitted while unchanged"`
@@ -166,6 +168,7 @@ type ResumeSessionResult struct {
 	Label            string                        `json:"label,omitempty" jsonschema:"the session's subject label, when one was recorded"`
 	Branch           string                        `json:"branch,omitempty" jsonschema:"the session's declared branch binding"`
 	PendingOperation *sdd.WorkflowPendingOperation `json:"pending_operation,omitempty" jsonschema:"unfinished recorded operation, included even when its open instance is omitted for size"`
+	Cancellation     *sdd.WorkflowCancellation     `json:"cancellation,omitempty" jsonschema:"latest recorded cancellation, included even when its instance is closed or omitted"`
 	Open             []ServeResult                 `json:"open_instances" jsonschema:"current serve for every running instance; the session shell's serve carries the open-threads block"`
 	Framing          string                        `json:"framing,omitempty"`
 	Instructions     string                        `json:"instructions,omitempty"`
@@ -327,7 +330,10 @@ func (s *Server) registerTools() {
 		Description: "Advance a procedure instance in the session named by session (required): send state " +
 			"fields per the served report_schema, or answer a pending chooser with {chooser, choice, " +
 			"userWords?, fields?}. User choosers must carry the user's answer relayed verbatim in " +
-			"userWords. When a move ends, the response carries the session shell's serve — where the " +
+			"userWords. For an unfinished operation, omit report and pass its exact retry_ref to " +
+			"continue or cancel_ref to leave its effects in place and return to the preceding interaction. " +
+			"Other transitions remain blocked until the operation is retried or cancelled. " +
+			"When a move ends, the response carries the session shell's serve — where the " +
 			"dialogue lands.",
 	}, s.next)
 
@@ -557,11 +563,8 @@ func (s *Server) next(ctx context.Context, req *mcp.CallToolRequest, args NextAr
 	if args.Instance == "" {
 		return nil, ServeResult{}, toolError("instance is required")
 	}
-	if len(args.Report) == 0 && args.RetryRef == 0 {
-		return nil, ServeResult{}, toolError("report is required: state fields per the served report_schema, or a chooser answer {chooser, choice, userWords?, fields?}")
-	}
 	identity := s.requestIdentity(req)
-	serve, err := ss.root.Advance(ctx, identity, sdd.WorkflowAdvanceRequest{Instance: args.Instance, Report: args.Report, Label: args.Label, RetryRef: args.RetryRef})
+	serve, err := ss.root.Advance(ctx, identity, sdd.WorkflowAdvanceRequest{Instance: args.Instance, Report: args.Report, Label: args.Label, RetryRef: args.RetryRef, CancelRef: args.CancelRef})
 	if err != nil {
 		return nil, ServeResult{}, err
 	}
@@ -1161,7 +1164,7 @@ func (s *Server) serveResultBody(ctx context.Context, req *mcp.CallToolRequest, 
 		Branch: serve.Branch, Instance: serve.Instance, Procedure: serve.Procedure, Status: serve.Status,
 		Step: serve.Step, Goal: serve.Goal, Instructions: composeInstructions(ss, serve), Missing: serve.Missing,
 		ReportSchema: serve.ReportSchema, Produced: capValues(serve.Produced), Execution: serve.Execution,
-		Collected: capValues(serve.Collected), PendingOperation: serve.PendingOperation,
+		Collected: capValues(serve.Collected), PendingOperation: serve.PendingOperation, Cancellation: serve.Cancellation,
 	}
 	if serve.PendingChooser != nil {
 		chooser := &ChooserResult{Chooser: serve.PendingChooser.Chooser, Kind: string(serve.PendingChooser.Kind)}
@@ -1275,7 +1278,7 @@ func (s *Server) mapRootResume(ctx context.Context, req *mcp.CallToolRequest, ss
 	result := ResumeSessionResult{
 		Session: string(source.Session), Project: string(ss.root.Project()),
 		Participant: source.Participant, Label: source.Label, Branch: source.Branch,
-		Instructions: resumeInstructions, PendingOperation: source.PendingOperation,
+		Instructions: resumeInstructions, PendingOperation: source.PendingOperation, Cancellation: source.Cancellation,
 	}
 	if source.Instructions != "" {
 		result.Instructions += "\n\n" + source.Instructions

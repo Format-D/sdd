@@ -238,3 +238,54 @@ func TestUnreadableEndingCannotBeCollectedOrResumed(t *testing.T) {
 		})
 	}
 }
+
+func TestCancellationOutcomeUpdatesSessionListing(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		returnStep string
+		shell      bool
+	}{
+		{name: "returns to the recorded interaction", returnStep: "playback"},
+		{name: "closes an instance without preceding interaction"},
+		{name: "closing the shell ends the session", shell: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCollectFixture(t)
+			started := `{"procedure":"capture","step":"publish"}`
+			if tc.returnStep != "" {
+				started = `{"procedure":"capture","step":"playback"}`
+			} else if tc.shell {
+				started = `{"procedure":"user-dialogue","class":"shell","step":"publish"}`
+			}
+			events := []string{legacyEvent("s_cancelled", 1, "i_1", "started", f.now.Format(time.RFC3339), started)}
+			if tc.returnStep != "" {
+				events = append(events,
+					legacyEvent("s_cancelled", 2, "i_1", "chooser_answer", f.now.Format(time.RFC3339), `{"chooser":"playback","choice":"confirm"}`),
+					legacyEvent("s_cancelled", 3, "i_1", "transition", f.now.Format(time.RFC3339), `{"from":"playback","to":"publish"}`))
+			}
+			ref := len(events) + 1
+			events = append(events,
+				legacyEvent("s_cancelled", ref, "i_1", "mutation_intent", f.now.Format(time.RFC3339), `{"step":"publish","fn":"newEntry","values":{"entryId":"20260914-010001-s-tac-new"}}`),
+				legacyEvent("s_cancelled", ref+1, "i_1", "mutation_outcome", f.now.Format(time.RFC3339), fmt.Sprintf(`{"step":"publish","fn":"newEntry","intent_ref":%d,"outcome":"cancelled","return_step":%q}`, ref, tc.returnStep)))
+			f.writeLegacyLog(t, "s_cancelled", "", events...)
+			listed, err := f.app.ListWorkflowSessions(t.Context(), f.identity, f.project)
+			if err != nil || len(listed) != 1 {
+				t.Fatalf("session listing = %+v, %v", listed, err)
+			}
+			if tc.returnStep == "" {
+				if len(listed[0].Open) != 0 {
+					t.Fatalf("cancelled instance still listed open: %+v", listed[0].Open)
+				}
+			} else if len(listed[0].Open) != 1 || listed[0].Open[0].Step != tc.returnStep {
+				t.Fatalf("cancelled instance lost return position: %+v", listed[0].Open)
+			}
+			if tc.shell {
+				_, _, err := f.app.ResumeWorkflow(t.Context(), f.identity, sdd.WorkflowResumeRequest{SessionID: "s_cancelled"})
+				var appErr *sdd.ApplicationError
+				if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorSessionEnded {
+					t.Fatalf("cancelled shell must end its session: %v", err)
+				}
+			}
+		})
+	}
+}
