@@ -28,7 +28,7 @@ import (
 // binding generation — the next write must carry the fresh one).
 func createFocusTarget(t *testing.T, app *sdd.Application, identity sdd.RequestIdentity, binding sdd.SessionBinding) (string, sdd.SessionBinding) {
 	t.Helper()
-	target, err := app.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	target, err := captureEntry(t, app, identity, "example", binding, sdd.EntryDraft{
 		Kind: "directive", Layer: "tactical", Intent: "pending", Confidence: "high",
 		Body: "A directive the focus advances.",
 	})
@@ -42,7 +42,7 @@ func TestCreateEntry_FocusPersistsInvolvementActorsAndWhen(t *testing.T) {
 	app, identity, binding, dir := newIdentityWriteApp(t)
 	targetID, binding := createFocusTarget(t, app, identity, binding)
 
-	focus, err := app.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	focus, err := captureEntry(t, app, identity, "example", binding, sdd.EntryDraft{
 		Kind: "focus", Layer: "tactical", Confidence: "high",
 		Body:        "Advance the target directive this cycle — the current focus.",
 		FocusActors: []string{"Christopher"},
@@ -86,7 +86,7 @@ func TestCreateEntry_FocusPreservesActorsSetDistinction(t *testing.T) {
 	app, identity, binding, dir := newIdentityWriteApp(t)
 	targetID, binding := createFocusTarget(t, app, identity, binding)
 
-	focus, err := app.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	focus, err := captureEntry(t, app, identity, "example", binding, sdd.EntryDraft{
 		Kind: "focus", Layer: "tactical", Confidence: "high",
 		Body: "A focus spanning two targets with different actor postures.",
 		Involvement: []model.Involvement{
@@ -119,7 +119,7 @@ func TestCreateEntry_FocusRendersThroughAsFocusBlock(t *testing.T) {
 	app, identity, binding, dir := newIdentityWriteApp(t)
 	targetID, binding := createFocusTarget(t, app, identity, binding)
 
-	focus, err := app.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	focus, err := captureEntry(t, app, identity, "example", binding, sdd.EntryDraft{
 		Kind: "focus", Layer: "tactical", Confidence: "high",
 		Body:        "Advance the target directive — rendered through the existing focus block.",
 		FocusWhen:   &model.FocusWhen{From: "2026-01-01", To: "2026-03-01"},

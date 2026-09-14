@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -79,7 +80,7 @@ func TestFilesystemSessionStoreConformance(t *testing.T) {
 				ID: "session-1", Subject: "christopher", Project: "example", Participant: "Christopher",
 				Attachment: &sdd.Attachment{Subject: "christopher", ClientName: "test-client", LastActivity: time.Now().UTC().Round(0)},
 			},
-			Append: sdd.SessionAppend{Events: []sdd.StoredEvent{{CodecVersion: 1, Code: "started", Payload: json.RawMessage(`{"instance":"i_1"}`)}}},
+			Append: sdd.SessionAppend{Events: []sdd.StoredEvent{{CodecVersion: 1, Code: "started", Payload: json.RawMessage(`{"instance":"i_1"}`)}, {CodecVersion: 1, Code: "advanced", Payload: json.RawMessage(`{}`)}}},
 		}
 	})
 }
@@ -95,6 +96,49 @@ func TestFilesystemStagedBlobStoreConformance(t *testing.T) {
 			Filename: "evidence.md", Content: []byte("evidence"),
 		}
 	})
+}
+
+func TestFilesystemStagedBytesRemainReadableWithoutLegacyMetadata(t *testing.T) {
+	for _, metadata := range []string{"absent", "unreadable"} {
+		t.Run(metadata, func(t *testing.T) {
+			root := canonicalTempDir(t)
+			ref := sdd.SessionRef{Subject: "local", Session: "s_legacy"}
+			const id = "0123456789abcdef0123456789abcdef"
+			dir := filepath.Join(root, ref.Subject, string(ref.Session))
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, id+".blob"), []byte("existing staged bytes"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if metadata == "unreadable" {
+				if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte("obsolete metadata"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store, err := localadapter.NewFilesystemStagedBlobStoreAt(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := store.Open(t.Context(), ref, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, readErr := io.ReadAll(reader)
+			if err := errors.Join(readErr, reader.Close()); err != nil {
+				t.Fatal(err)
+			}
+			if string(content) != "existing staged bytes" {
+				t.Fatalf("content = %q", content)
+			}
+			if err := store.DeleteStaged(t.Context(), ref); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("staging directory remains: %v", err)
+			}
+		})
+	}
 }
 
 func TestFunctionalMechanicalAdaptersConform(t *testing.T) {

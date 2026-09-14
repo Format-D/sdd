@@ -215,21 +215,24 @@ func TestWorkflowEffectiveTargetPrecedenceIsSharedByReadsAndWrites(t *testing.T)
 	tests := []struct {
 		binding   string
 		field     string
+		published bool
 		wantRead  string
 		wantWrite string
 		wantEntry string
 	}{
 		{wantWrite: "main", wantEntry: currentID},
 		{field: "captureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
-		{field: "resolvedCaptureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
+		{field: "resolvedCaptureBranch", wantWrite: "main", wantEntry: currentID},
+		{field: "resolvedCaptureBranch", published: true, wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 		{field: "workBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 		{binding: "work", wantRead: "work", wantWrite: "work", wantEntry: workID},
 		{binding: "work", field: "captureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
-		{binding: "work", field: "resolvedCaptureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
+		{binding: "work", field: "resolvedCaptureBranch", wantRead: "work", wantWrite: "work", wantEntry: workID},
+		{binding: "work", field: "resolvedCaptureBranch", published: true, wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 		{binding: "work", field: "workBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 	}
 	for _, tt := range tests {
-		name := fmt.Sprintf("binding=%q field=%q", tt.binding, tt.field)
+		name := fmt.Sprintf("binding=%q field=%q published=%v", tt.binding, tt.field, tt.published)
 		t.Run(name, func(t *testing.T) {
 			workflow := &WorkflowSession{
 				app: app, project: "example", identity: RequestIdentity{Subject: "christopher"}, ctx: t.Context(),
@@ -243,6 +246,11 @@ func TestWorkflowEffectiveTargetPrecedenceIsSharedByReadsAndWrites(t *testing.T)
 			case "resolvedCaptureBranch":
 				if err := store.WriteEngine(tt.field, "explicit"); err != nil {
 					t.Fatal(err)
+				}
+				if tt.published {
+					if err := store.WriteEngine("entryId", explicitID); err != nil {
+						t.Fatal(err)
+					}
 				}
 			default:
 				if _, err := store.WriteState(map[string]any{tt.field: "explicit"}); err != nil {

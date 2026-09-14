@@ -86,16 +86,20 @@ steps:
     - id: playback
       chooser: user
       options:
-          - {choice: confirm, call: confirmPlayback, to: write}
+          - {choice: confirm, call: confirmPlayback, to: preflight}
           - {choice: adjust, collect: ["body?", "refs?", "topics?", "confidence?", "intent?"], to: assemble}
           - {choice: abort, to: end(abandoned)}
+    - id: preflight
+      op: preflightEntry
+      transitions:
+          - when: noHighFindings
+            to: write
+          - otherwise: reviseOrOverride
     - id: write
       guard: playbackConfirmed
       op: newEntry
       transitions:
-          - when: noHighFindings
-            to: verifySummary
-          - otherwise: reviseOrOverride
+          - otherwise: verifySummary
     - id: reviseOrOverride
       chooser: user
       render: findings
@@ -165,15 +169,19 @@ steps:
     - id: playback
       chooser: user
       options:
-          - {choice: confirm, call: confirmPlayback, to: write}
+          - {choice: confirm, call: confirmPlayback, to: preflight}
           - {choice: abort, to: end(abandoned)}
+    - id: preflight
+      op: preflightEntry
+      transitions:
+          - when: noHighFindings
+            to: write
+          - otherwise: reviseOrOverride
     - id: write
       guard: playbackConfirmed
       op: newEntry
       transitions:
-          - when: noHighFindings
-            to: verifySummary
-          - otherwise: reviseOrOverride
+          - otherwise: verifySummary
     - id: reviseOrOverride
       chooser: user
       render: findings
@@ -935,7 +943,7 @@ func TestToolContractSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := fmt.Sprintf("%x", sha256.Sum256(encoded))
-	const want = "89d78a41c46e005588bd229cce01bde7bae13e5573eb82f11302704786e4da40"
+	const want = "137c4a0c8c70c6b32551b7854350c879e1ed50b34ef416cb2f75b3a00be0935f"
 	if got != want {
 		t.Fatalf("MCP tool contract changed: got %s, want %s", got, want)
 	}

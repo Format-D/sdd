@@ -38,14 +38,6 @@ func publishBytes(root *os.Root, name string, data []byte) error {
 	return syncRootDir(root, directory)
 }
 
-func publishJSON(root *os.Root, name string, value any) error {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	return publishBytes(root, name, encoded)
-}
-
 // writeJSONAtomic is the path-addressed form, for the graph store which sits
 // outside this subsystem's containment root.
 func writeJSONAtomic(filename string, value any) error {

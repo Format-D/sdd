@@ -50,7 +50,7 @@ func TestApplyPreparedRetriesRevisionConflictThenMerges(t *testing.T) {
 	var injector *conflictInjectingStore
 	// Two lost races followed by success proves the engine-internal retry lands
 	// within its three-attempt bound, invisible to the caller.
-	application, sessions, blobs, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		injector = &conflictInjectingStore{GraphStore: store, remaining: 2}
 		return injector
 	}, nil)
@@ -60,9 +60,6 @@ func TestApplyPreparedRetriesRevisionConflictThenMerges(t *testing.T) {
 	result, err := application.ApplyPrepared(t.Context(), identity, "example", binding, prepared)
 	if err != nil || result.Apply.State != sdd.MutationApplied {
 		t.Fatalf("bounded retry apply = %+v, %v", result, err)
-	}
-	if blobs.released != 1 {
-		t.Fatalf("applied retry released blobs %d times, want 1", blobs.released)
 	}
 	pending, err := application.ListRecoveries(t.Context(), identity, "example", false)
 	if err != nil || len(pending.Items) != 0 {
@@ -79,7 +76,7 @@ func TestApplyPreparedRetriesRevisionConflictThenMerges(t *testing.T) {
 func TestApplyPreparedExhaustedConflictFailsTypedNeverRecovery(t *testing.T) {
 	// Exactly three injected conflicts exhaust the cap: paired with the two-loss
 	// merge case (which lands), this pins the retry bound at exactly three.
-	application, sessions, blobs, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		return &conflictInjectingStore{GraphStore: store, remaining: 3}
 	}, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
@@ -93,10 +90,7 @@ func TestApplyPreparedExhaustedConflictFailsTypedNeverRecovery(t *testing.T) {
 		t.Fatalf("exhausted conflict message = %q, want a re-try invitation", err.Error())
 	}
 	// A revision conflict never files a recovery: the contended intent is
-	// auto-discarded, releasing its retained blobs.
-	if blobs.released != 1 {
-		t.Fatalf("contended discard released blobs %d times, want 1", blobs.released)
-	}
+	// auto-discarded.
 	pending, err := application.ListRecoveries(t.Context(), identity, "example", false)
 	if err != nil || len(pending.Items) != 0 {
 		t.Fatalf("exhausted conflict actionable recovery = %+v, %v; want none", pending, err)
@@ -108,7 +102,7 @@ func TestApplyPreparedExhaustedConflictFailsTypedNeverRecovery(t *testing.T) {
 }
 
 func TestApplyPreparedGenuineWIPMarkerPathCollisionFailsTyped(t *testing.T) {
-	application, sessions, _, graph := newDurableApplication(t, time.Now, nil, nil)
+	application, sessions, graph := newDurableApplication(t, time.Now, nil, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	anchorPath := "2026/07/13-055400-s-tac-anc.md"
 	anchorID, err := model.RelPathToID(anchorPath)
@@ -145,7 +139,7 @@ func TestApplyPreparedGenuineWIPMarkerPathCollisionFailsTyped(t *testing.T) {
 
 func TestReplaceSummaryMergesUnderRetry(t *testing.T) {
 	var injector *conflictInjectingStore
-	application, sessions, _, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		injector = &conflictInjectingStore{GraphStore: store}
 		return injector
 	}, nil)
@@ -263,7 +257,7 @@ func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
 	results := make(chan outcome, captures)
 	for i := range bindings {
 		go func(n int) {
-			created, err := application.CreateEntry(t.Context(), identity, "example", bindings[n], sdd.EntryDraft{
+			created, err := captureEntry(t, application, identity, "example", bindings[n], sdd.EntryDraft{
 				Kind: "gap", Layer: "tactical", Body: fmt.Sprintf("Interleaved capture body %d.", n), Confidence: "high",
 			})
 			results <- outcome{id: created.EntryID, err: err}

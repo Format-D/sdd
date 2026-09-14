@@ -35,8 +35,10 @@ type FuncDoc struct {
 // additionally reach their side-effect dependencies through the closures
 // they were registered with — the registry itself stays dependency-free.
 type Context struct {
-	Store *Store
-	Graph *model.Graph
+	Instance string
+	Intent   *MutationIntent
+	Store    *Store
+	Graph    *model.Graph
 	// Step is the step the function runs at — commands like confirmPlayback
 	// record it (the reopen target when a confirmation goes stale).
 	Step string
@@ -102,6 +104,10 @@ type QueryBound struct {
 type Command struct {
 	Doc FuncDoc
 	Fn  CommandFunc
+	// Prepare allocates resource identities before the durable intent is appended.
+	Prepare func(*Context) (map[string]string, error)
+	// GraphIndependent leaves source acquisition to the operation.
+	GraphIndependent bool
 	// MutatesGraph declares that running this command changes the on-disk graph
 	// (a new entry, a rewritten summary). The engine invalidates the graph
 	// provider after such a command so later reads in the same advance reload

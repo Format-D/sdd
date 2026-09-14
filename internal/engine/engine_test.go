@@ -166,14 +166,22 @@ type fixtureEnv struct {
 type memorySink struct {
 	events   []Event
 	failWith error
+	reject   EventType
+	after    EventType
+	position uint64
 }
 
-func (m *memorySink) Append(e Event) error {
-	if m.failWith != nil {
-		return m.failWith
+func (m *memorySink) Append(e Event) (uint64, error) {
+	if m.failWith != nil && (m.reject == "" || m.reject == e.Event) && m.after == "" {
+		return 0, m.failWith
 	}
+	if e.Event == m.after {
+		m.after = ""
+	}
+	m.position++
+	e.Position = m.position
 	m.events = append(m.events, e)
-	return nil
+	return e.Position, nil
 }
 
 func newFixtureEnv(t *testing.T) *fixtureEnv {
@@ -494,8 +502,8 @@ func TestSession_SinkFailureBlocksAdvance(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.sink.failWith = fmt.Errorf("disk full")
-	if _, err := env.session.Report(sv.Instance, fullDraft()); err != nil {
-		t.Fatal(err) // the append failure is deferred, the report itself lands
+	if _, err := env.session.Report(sv.Instance, fullDraft()); err == nil {
+		t.Fatal("the request whose append fails must report that failure")
 	}
 	if _, err := env.session.Report(sv.Instance, fullDraft()); err == nil ||
 		!strings.Contains(err.Error(), "durability") {

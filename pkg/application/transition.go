@@ -69,8 +69,7 @@ type finalizerOutcomeEvent struct {
 }
 
 // ApplyPrepared durably records intent before canonical apply and outcome
-// afterward. Unknown apply outcomes retain staged blobs for reconciliation;
-// definitive outcomes release them after all applied finalizers succeed.
+// afterward. Staged bytes remain available until the session is collected.
 func (a *Application) ApplyPrepared(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, prepared PreparedTransition) (TransitionResult, error) {
 	principal, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
 	if err != nil {
@@ -90,14 +89,8 @@ func (a *Application) ApplyPrepared(ctx context.Context, identity RequestIdentit
 	if err != nil {
 		return TransitionResult{}, err
 	}
-	if err := a.blobs.Retain(ctx, prepared.Staged, prepared.Batch.ID, prepared.BlobIDs); err != nil {
-		return TransitionResult{}, err
-	}
 	version, err := a.sessions.Append(ctx, binding.SessionID, stored.Version, SessionAppend{Events: []StoredEvent{intent}})
 	if err != nil {
-		if releaseErr := a.blobs.Release(ctx, prepared.Staged, prepared.Batch.ID); releaseErr != nil {
-			return TransitionResult{}, errors.Join(err, fmt.Errorf("releasing staged blob retention after intent append failed: %w", releaseErr))
-		}
 		return TransitionResult{}, err
 	}
 	binding.Version = version
@@ -181,9 +174,6 @@ func (a *Application) finishTransition(ctx context.Context, runtime *ProjectRunt
 		}
 	}
 	if apply.State == MutationApplied {
-		if err := a.blobs.Release(ctx, prepared.Staged, prepared.Batch.ID); err != nil {
-			return result, &ApplicationError{Code: ErrorRecoveryRequired, Message: "staged blob retention could not be released", ApplyState: apply.State, Revision: apply.Revision, Cause: err}
-		}
 		next, err := appendRecoveryTerminal(ctx, a.sessions, result.Binding, recoveryTerminalEvent{
 			MutationID: prepared.Batch.ID, Digest: prepared.Batch.Digest, Target: prepared.Target,
 			OriginalSubject: prepared.Staged.Subject, OriginalSession: prepared.Staged.Session,
@@ -222,7 +212,7 @@ func isGraphConflict(err error) bool {
 // tear it down as a discard so it never surfaces as a pending recovery, and
 // return the typed conflict inviting a plain re-try.
 func (a *Application) discardContendedTransition(ctx context.Context, result TransitionResult, prepared PreparedTransition, actor string) (TransitionResult, error) {
-	next, err := a.releaseAndRecordTerminal(ctx, result.Binding, prepared, recoveryTerminalEvent{
+	next, err := a.recordRecoveryTerminal(ctx, result.Binding, recoveryTerminalEvent{
 		MutationID: prepared.Batch.ID, Digest: prepared.Batch.Digest, Target: prepared.Target,
 		OriginalSubject: prepared.Staged.Subject, OriginalSession: prepared.Staged.Session,
 		Actor: actor, Verb: RecoveryDiscard, Cause: recoveryCauseGraphContention,

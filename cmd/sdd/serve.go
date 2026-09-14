@@ -391,18 +391,16 @@ func collectSessions(ctx context.Context, application *sdd.Application, retentio
 		}
 		total.RemovedSessions = append(total.RemovedSessions, result.RemovedSessions...)
 		total.RemovedStaged = append(total.RemovedStaged, result.RemovedStaged...)
-		total.DrainedIntents += result.DrainedIntents
 		total.Skipped = append(total.Skipped, result.Skipped...)
 		if result.Next == "" {
 			break
 		}
 		cmd.After = result.Next
 	}
-	if len(total.RemovedSessions) > 0 || len(total.RemovedStaged) > 0 || total.DrainedIntents > 0 {
+	if len(total.RemovedSessions) > 0 || len(total.RemovedStaged) > 0 {
 		log.Info("collected session scaffolding",
 			"sessions", len(total.RemovedSessions),
 			"staged_sessions", len(total.RemovedStaged),
-			"drained_intents", total.DrainedIntents,
 			"skipped", len(total.Skipped),
 		)
 	}
@@ -462,15 +460,16 @@ func newLocalMutationTargets(project sdd.ProjectID, serverCheckout string) (*loc
 				return nil, nil, nil, fmt.Errorf("mutation target checkout %q does not contain project %s", checkout, project)
 			}
 			targetGraphDir := meta.ResolveGraphDir(checkout, targetCfg)
-			targetGraph, graphErr := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: project, GraphDir: targetGraphDir, Branch: target.Branch})
-			if graphErr != nil {
-				return nil, nil, nil, graphErr
-			}
 			graphDirRel := targetCfg.GraphDir
 			if graphDirRel == "" {
 				graphDirRel = model.DefaultGraphDir
 			}
-			return targetGraph, []sdd.MutationFinalizer{localadapter.GitFinalizer{Checkout: checkout, GraphDir: graphDirRel, Branch: target.Branch}}, func() error { return nil }, nil
+			gitFinalizer := localadapter.GitFinalizer{Checkout: checkout, GraphDir: graphDirRel, Branch: target.Branch}
+			targetGraph, graphErr := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: project, GraphDir: targetGraphDir, Branch: target.Branch, PublicationGit: &gitFinalizer})
+			if graphErr != nil {
+				return nil, nil, nil, graphErr
+			}
+			return targetGraph, []sdd.MutationFinalizer{gitFinalizer}, func() error { return nil }, nil
 		},
 	})
 }

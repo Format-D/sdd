@@ -1,6 +1,7 @@
 package application_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -102,13 +103,18 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 			},
 		},
 		{
-			name:  "a recorded ending is never overridden",
+			name:   "metadata cannot end a running shell",
+			ended:  `,"Ended":{"Act":"abandoned","EndedAt":"` + secondEnd + `"}`,
+			events: []string{legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData)},
+		},
+		{
+			name:  "a metadata ending cannot override the terminal event",
 			ended: `,"Ended":{"Act":"abandoned","EndedAt":"` + secondEnd + `","Reason":"torn down"}`,
 			events: []string{
 				legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData),
 				legacyEvent("s_legacy", 2, "i_1", "completed", firstEnd, ""),
 			},
-			wantAct: sdd.SessionAbandoned, wantAt: secondEnd,
+			wantAct: sdd.SessionConcluded, wantAt: firstEnd,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,5 +179,62 @@ func TestCollectRemovesLegacyShellEndedSessions(t *testing.T) {
 	}
 	if got := f.listedIDs(t); !slices.Equal(got, []string{"s_legacy_open", "s_legacy_recent"}) {
 		t.Fatalf("remaining = %v, want the in-window and still-running sessions", got)
+	}
+}
+
+func TestExplicitEndingEventOverridesMetadata(t *testing.T) {
+	f := newCollectFixture(t)
+	f.writeSession(t, "s_explicit", time.Time{}, "")
+	end := sdd.SessionEnd{Act: sdd.SessionAbandoned, EndedAt: f.now.Add(-time.Hour), Reason: "participant stopped"}
+	payload, err := json.Marshal(end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.sessions.Load(t.Context(), "s_explicit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := stored.Metadata
+	metadata.Ended = &sdd.SessionEnd{Act: sdd.SessionConcluded, EndedAt: f.now.Add(-24 * time.Hour)}
+	_, err = f.sessions.Append(t.Context(), "s_explicit", 0, sdd.SessionAppend{Metadata: &metadata, Events: []sdd.StoredEvent{{CodecVersion: sdd.SessionCodecVersion, Code: sdd.SessionEndedEventCode, Payload: payload}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = f.app.ResumeWorkflow(t.Context(), f.identity, sdd.WorkflowResumeRequest{SessionID: "s_explicit"})
+	var appErr *sdd.ApplicationError
+	if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorSessionEnded || appErr.Ended == nil || *appErr.Ended != end {
+		t.Fatalf("resume error = %+v, want ending %+v", err, end)
+	}
+}
+
+func TestUnreadableEndingCannotBeCollectedOrResumed(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		version uint32
+		payload string
+	}{
+		{name: "null ending", version: sdd.SessionCodecVersion, payload: `null`},
+		{name: "missing timestamp", version: sdd.SessionCodecVersion, payload: `{"Act":"abandoned"}`},
+		{name: "future codec", version: 99, payload: `{"Act":"abandoned","EndedAt":"2026-07-01T00:00:00Z"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newCollectFixture(t)
+			f.writeSession(t, "s_unreadable_end", time.Time{}, "")
+			_, err := f.sessions.Append(t.Context(), "s_unreadable_end", 0, sdd.SessionAppend{Events: []sdd.StoredEvent{{CodecVersion: tt.version, Code: sdd.SessionEndedEventCode, Payload: json.RawMessage(tt.payload)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = f.app.ResumeWorkflow(t.Context(), f.identity, sdd.WorkflowResumeRequest{SessionID: "s_unreadable_end"})
+			if err == nil {
+				t.Fatal("unreadable ending resumed")
+			}
+			_, err = f.app.CollectSessions(t.Context(), sdd.CollectSessionsCmd{})
+			if err != nil {
+				t.Fatalf("unreadable ending should be skipped by collection: %v", err)
+			}
+			if _, err := f.sessions.Load(t.Context(), "s_unreadable_end"); err != nil {
+				t.Fatalf("session lost: %v", err)
+			}
+		})
 	}
 }

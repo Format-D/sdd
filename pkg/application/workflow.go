@@ -67,6 +67,7 @@ type WorkflowStartRequest struct {
 }
 
 type WorkflowAdvanceRequest struct {
+	RetryRef uint64
 	Instance string
 	Report   map[string]any
 	Label    string
@@ -83,24 +84,34 @@ type WorkflowChooser struct {
 	Options []WorkflowChooserOption
 }
 
+// WorkflowPendingOperation exposes the continuation already recorded in the session.
+type WorkflowPendingOperation struct {
+	Instance     string            `json:"instance"`
+	RetryRef     uint64            `json:"retry_ref"`
+	Command      string            `json:"command"`
+	Values       map[string]string `json:"values,omitempty"`
+	Instructions string            `json:"instructions"`
+}
+
 type WorkflowServe struct {
 	Session SessionID
 	// Project is the project the served instance targets — the home project
 	// unless the move was started in a dependency (d-cpt-yjc).
-	Project        ProjectID
-	Branch         string
-	Instance       string
-	Procedure      string
-	Status         string
-	Step           string
-	Goal           string
-	Instructions   string
-	Missing        []string
-	ReportSchema   map[string]any
-	PendingChooser *WorkflowChooser
-	Execution      string
-	Produced       map[string]any
-	Diagnostics    []string
+	Project          ProjectID
+	Branch           string
+	Instance         string
+	Procedure        string
+	Status           string
+	Step             string
+	Goal             string
+	Instructions     string
+	Missing          []string
+	ReportSchema     map[string]any
+	PendingChooser   *WorkflowChooser
+	PendingOperation *WorkflowPendingOperation
+	Execution        string
+	Produced         map[string]any
+	Diagnostics      []string
 	// InstructionLanes are the unit's rendered lanes in order — what the MCP
 	// layer dedups independently; Instructions is their join plus diagnostics.
 	InstructionLanes []types.ServeLane
@@ -155,12 +166,13 @@ type WorkflowSessionSummary struct {
 }
 
 type WorkflowResumeResult struct {
-	Session      SessionID
-	Participant  string
-	Label        string
-	Branch       string
-	Open         []WorkflowServe
-	Instructions string
+	Session          SessionID
+	Participant      string
+	Label            string
+	Branch           string
+	Open             []WorkflowServe
+	PendingOperation *WorkflowPendingOperation
+	Instructions     string
 }
 
 type WorkflowAbandonResult struct {
@@ -337,7 +349,7 @@ func (a *Application) stampAttachment(ctx context.Context, principal Principal, 
 		metadata := stored.Metadata
 		metadata.Attachment = newAttachment(principal.Subject, request.ClientName, request.ClientVersion, now)
 		metadata.UpdatedAt = now
-		version, err := a.sessions.Append(ctx, request.SessionID, stored.Version, SessionAppend{Metadata: &metadata})
+		version, err := a.sessions.Append(ctx, request.SessionID, stored.Version, SessionAppend{Metadata: &metadata, Events: []StoredEvent{{CodecVersion: SessionCodecVersion, Code: "session_attached", Payload: json.RawMessage(`{}`)}}})
 		if err == nil {
 			stored.Metadata = metadata
 			stored.Version = version
@@ -492,8 +504,8 @@ func (w *WorkflowSession) Start(ctx context.Context, identity RequestIdentity, r
 }
 
 func (w *WorkflowSession) Advance(ctx context.Context, identity RequestIdentity, request WorkflowAdvanceRequest) (*WorkflowServe, error) {
-	if request.Instance == "" || len(request.Report) == 0 {
-		return nil, fmt.Errorf("instance and report are required")
+	if request.Instance == "" || (len(request.Report) == 0 && request.RetryRef == 0) {
+		return nil, fmt.Errorf("instance and either report or retry_ref are required")
 	}
 	if w.Finished() {
 		return nil, w.finishedError()
@@ -509,7 +521,12 @@ func (w *WorkflowSession) Advance(ctx context.Context, identity RequestIdentity,
 	)
 	chooser, hasChooser := request.Report["chooser"].(string)
 	choice, hasChoice := request.Report["choice"].(string)
-	if hasChooser && hasChoice && chooser != "" && choice != "" {
+	if request.RetryRef != 0 {
+		if len(request.Report) != 0 {
+			return nil, fmt.Errorf("retry_ref cannot be combined with a report")
+		}
+		serve, err = w.session.Retry(request.Instance, request.RetryRef)
+	} else if hasChooser && hasChoice && chooser != "" && choice != "" {
 		// A chooser answer's envelope is closed: anything else at the top
 		// level would be dropped without reaching the engine, leaving the
 		// sender unable to tell a landed value from a lost one
@@ -571,7 +588,10 @@ func (w *WorkflowSession) ServeAll(ctx context.Context, identity RequestIdentity
 }
 
 func (w *WorkflowSession) resumeResult() (WorkflowResumeResult, error) {
-	result := WorkflowResumeResult{Session: w.ID(), Participant: w.session.Participant, Label: w.session.Label, Branch: w.branch}
+	result := WorkflowResumeResult{Session: w.ID(), Participant: w.session.Participant, Label: w.session.Label, Branch: w.branch, PendingOperation: w.pendingOperation()}
+	if result.PendingOperation != nil {
+		result.Instructions = result.PendingOperation.Instructions
+	}
 	for _, inst := range w.session.Instances() {
 		if inst.Status != engine.StatusRunning {
 			continue
@@ -1049,7 +1069,11 @@ func (a *Application) AbandonWorkflowSession(ctx context.Context, identity Reque
 	metadata := stored.Metadata
 	metadata.UpdatedAt = now
 	metadata.Ended = &SessionEnd{Act: SessionAbandoned, EndedAt: now, Reason: strings.TrimSpace(reason)}
-	appendData := SessionAppend{Metadata: &metadata}
+	endPayload, err := json.Marshal(metadata.Ended)
+	if err != nil {
+		return WorkflowAbandonResult{}, err
+	}
+	appendData := SessionAppend{Metadata: &metadata, Events: []StoredEvent{{CodecVersion: SessionCodecVersion, Code: SessionEndedEventCode, Payload: endPayload}}}
 	for _, event := range sink.events {
 		payload, marshalErr := json.Marshal(event)
 		if marshalErr != nil {
@@ -1069,12 +1093,12 @@ func (a *Application) AbandonWorkflowSession(ctx context.Context, identity Reque
 // under a claimed attachment).
 type bufferSink struct{ events []engine.Event }
 
-func (b *bufferSink) Append(event engine.Event) error {
+func (b *bufferSink) Append(event engine.Event) (uint64, error) {
 	if event.Event == engine.EventServed {
-		return nil
+		return uint64(event.Seq), nil
 	}
 	b.events = append(b.events, event)
-	return nil
+	return uint64(event.Seq), nil
 }
 
 func (w *WorkflowSession) setOperation(ctx context.Context, identity RequestIdentity) {
@@ -1131,6 +1155,14 @@ func (w *WorkflowSession) loadProcedure(canonical string) (*engine.Spec, error) 
 	return engine.LoadSpec(entry, w.engine.Registry)
 }
 
+func (w *WorkflowSession) pendingOperation() *WorkflowPendingOperation {
+	intent := w.session.PendingMutation()
+	if intent == nil {
+		return nil
+	}
+	return &WorkflowPendingOperation{Instance: intent.Instance, RetryRef: intent.Ref, Command: intent.Command, Values: intent.Values, Instructions: intent.RetryInstructions()}
+}
+
 func (w *WorkflowSession) publicServe(serve *engine.Serve) *WorkflowServe {
 	result := &WorkflowServe{
 		Session: w.ID(), Project: w.instanceProject(serve.Instance), Branch: w.branch,
@@ -1139,6 +1171,11 @@ func (w *WorkflowSession) publicServe(serve *engine.Serve) *WorkflowServe {
 		ReportSchema: serve.ReportSchema, Produced: serve.Produced, Diagnostics: append([]string(nil), serve.Diagnostics...),
 		InstructionLanes: append([]types.ServeLane(nil), serve.Lanes...),
 		Sizes:            append([]types.PartSize(nil), serve.Sizes...),
+	}
+	if pending := w.pendingOperation(); pending != nil && pending.Instance == serve.Instance {
+		result.PendingOperation = pending
+		result.Diagnostics = append(result.Diagnostics, pending.Instructions)
+		result.Instructions = engine.ComposeInstructions(result.Instructions, []string{pending.Instructions})
 	}
 	if serve.Chooser != nil {
 		chooser := &WorkflowChooser{Chooser: serve.Chooser.Chooser, Kind: ChooserKind(serve.Chooser.Kind)}
@@ -1254,36 +1291,40 @@ func (w *WorkflowSession) readInfo() (InfoResult, error) {
 
 type workflowSink struct{ workflow *WorkflowSession }
 
-func (s *workflowSink) Append(event engine.Event) error {
+func (s *workflowSink) Append(event engine.Event) (uint64, error) {
 	// A serve is a pure read: its forensic served marker never reaches the
 	// durable log, so re-serving (ServeShell/ServeAll) writes nothing
 	// and each engine operation appends only its own event with the stamp.
 	if event.Event == engine.EventServed {
-		return nil
+		return 0, nil
 	}
 	payload, err := json.Marshal(event)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	events := []StoredEvent{{CodecVersion: SessionCodecVersion, Code: WorkflowEventCode, Payload: payload}}
 	// The started instance's target lands in the same append as its start, so
 	// no instance ever exists without the project it was started in.
 	w := s.workflow
+	position := w.binding.Version + 1
 	if event.Event == engine.EventStarted && w.startProject != "" {
 		project := w.startProject
 		w.startProject = ""
 		record, err := instanceProjectRecord(event.Instance, project)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		events = append(events, record)
 		if err := w.appendStoredEvents(events); err != nil {
-			return err
+			return 0, err
 		}
 		w.instanceProjects[event.Instance] = project
-		return nil
+		return position, nil
 	}
-	return w.appendStoredEvents(events)
+	if err := w.appendStoredEvents(events); err != nil {
+		return 0, err
+	}
+	return position, nil
 }
 
 // appendStoredEvent appends one of the session's own events with the activity
@@ -1402,6 +1443,7 @@ func decodeWorkflowEvents(stored []StoredEvent) ([]engine.Event, error) {
 		if err := json.Unmarshal(item.Payload, &event); err != nil {
 			return nil, fmt.Errorf("decoding workflow event: %w", err)
 		}
+		event.Position = item.Sequence
 		events = append(events, event)
 	}
 	return events, nil

@@ -25,16 +25,20 @@ type FilesystemGraphStoreOptions struct {
 	GraphDir string
 	// Branch is the authority assigned by the target acquirer, if branch-scoped.
 	Branch string
+	// PublicationGit makes a Git commit part of capture publication's success.
+	// Without it, this adapter acknowledges filesystem state only.
+	PublicationGit *GitFinalizer
 }
 
 // FilesystemGraphStore is the local canonical graph authority. It owns its
 // revision cache and never requires callers to invalidate snapshots.
 type FilesystemGraphStore struct {
-	project   app.ProjectID
-	branch    string
-	dir       string
-	mu        sync.Mutex
-	snapshots map[string]*retainedSnapshot
+	project        app.ProjectID
+	branch         string
+	dir            string
+	mu             sync.Mutex
+	snapshots      map[string]*retainedSnapshot
+	publicationGit *GitFinalizer
 
 	beforeApplyOperation    func(int) error
 	beforeRollbackOperation func(int) error
@@ -82,9 +86,10 @@ func NewFilesystemGraphStore(options FilesystemGraphStoreOptions) (*FilesystemGr
 		return nil, fmt.Errorf("sdd: creating graph transaction directory: %w", err)
 	}
 	return &FilesystemGraphStore{
-		project: options.Project,
-		branch:  options.Branch,
-		dir:     options.GraphDir,
+		project:        options.Project,
+		branch:         options.Branch,
+		dir:            options.GraphDir,
+		publicationGit: options.PublicationGit,
 	}, nil
 }
 

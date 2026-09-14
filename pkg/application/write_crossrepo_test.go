@@ -66,7 +66,7 @@ func TestCreateEntry_DeclaredCrossRepoRefPassesPreflight(t *testing.T) {
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "cross-repo-write")
 
-	result, err := application.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	result, err := captureEntry(t, application, identity, "example", binding, sdd.EntryDraft{
 		Kind: "gap", Layer: "tactical", Confidence: "high",
 		Body: "An observation grounded in a foreign entry (example.org/dep:20260713-040000-s-tac-dep).",
 		Refs: []sdd.EntryRef{{ID: "example.org/dep:20260713-040000-s-tac-dep", Kind: "grounded-in"}},

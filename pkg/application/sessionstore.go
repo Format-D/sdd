@@ -3,10 +3,12 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/networkteam/sdd/internal/engine"
 	"github.com/networkteam/sdd/internal/model"
+	"github.com/networkteam/slogutils"
 )
 
 type SessionID string
@@ -26,8 +28,8 @@ type SessionMetadata struct {
 	// compositions without a branch concept leave it empty.
 	Branch     string `json:"branch,omitempty"`
 	Attachment *Attachment
-	// Ended is the session's single terminal record. Its presence is what makes
-	// a session ended; nothing else about a session ends it (d-cpt-rw7).
+	// Ended summarizes the terminal event. Application reads derive it from
+	// events; metadata cannot independently end or reopen a session.
 	Ended     *SessionEnd `json:",omitempty"`
 	UpdatedAt time.Time
 }
@@ -42,6 +44,8 @@ type Attachment struct {
 	ClientVersion string
 	LastActivity  time.Time
 }
+
+const SessionEndedEventCode = "session_ended"
 
 // SessionEnd records the participant act that ended a session, written once and
 // never revised. Reason records the abandon note, so a displaced writer's next
@@ -109,10 +113,8 @@ func endFromLegacyHistory(history []legacyAttachmentRecord) *SessionEnd {
 	return nil
 }
 
-// legacyEndStore is the single authority for the ending a log never recorded in
-// its metadata, so collection, listings and resume never disagree about which
-// sessions are over. Reads derive; writes pass through — a derived ending stays
-// read-side and is never recorded back into the log.
+// legacyEndStore derives ending state from events for collection, listings and
+// resume. Legacy shell events remain readable; metadata is only a summary.
 type legacyEndStore struct{ SessionStore }
 
 func (s legacyEndStore) Load(ctx context.Context, id SessionID) (StoredSession, error) {
@@ -120,7 +122,9 @@ func (s legacyEndStore) Load(ctx context.Context, id SessionID) (StoredSession, 
 	if err != nil {
 		return stored, err
 	}
-	deriveLegacyEnd(&stored)
+	if err := deriveLegacyEnd(&stored); err != nil {
+		return StoredSession{}, err
+	}
 	return stored, nil
 }
 
@@ -137,7 +141,10 @@ func (s legacyEndStore) List(ctx context.Context, filter SessionFilter) (Session
 	}
 	kept := page.Sessions[:0]
 	for i := range page.Sessions {
-		deriveLegacyEnd(&page.Sessions[i])
+		if err := deriveLegacyEnd(&page.Sessions[i]); err != nil {
+			slogutils.FromContext(ctx).Warn("skipping unreadable session ending", "session", page.Sessions[i].Metadata.ID, "err", err)
+			continue
+		}
 		if filter.Matches(page.Sessions[i].Metadata) {
 			kept = append(kept, page.Sessions[i])
 		}
@@ -146,14 +153,28 @@ func (s legacyEndStore) List(ctx context.Context, filter SessionFilter) (Session
 	return page, nil
 }
 
-// deriveLegacyEnd recovers the terminal record from what the log states about
-// itself. A record in metadata — written there, or recovered at decode from a
-// superseded shape — always wins.
-func deriveLegacyEnd(stored *StoredSession) {
-	if stored.Metadata.Ended != nil {
-		return
+// deriveLegacyEnd reads an explicit ending first, then the terminal shell
+// events used by older logs. Contradictory metadata never overrides either.
+func deriveLegacyEnd(stored *StoredSession) error {
+	for _, event := range stored.Events {
+		if event.Code != SessionEndedEventCode {
+			continue
+		}
+		if !SupportedSessionCodecVersion(event.CodecVersion) {
+			return &ApplicationError{Code: ErrorMigrationRequired, Message: "unsupported session ending codec", Version: event.CodecVersion}
+		}
+		var end SessionEnd
+		if err := json.Unmarshal(event.Payload, &end); err != nil {
+			return fmt.Errorf("sdd: decode session ending for %s: %w", stored.Metadata.ID, err)
+		}
+		if (end.Act != SessionConcluded && end.Act != SessionAbandoned) || end.EndedAt.IsZero() {
+			return fmt.Errorf("sdd: invalid session ending for %s", stored.Metadata.ID)
+		}
+		stored.Metadata.Ended = &end
+		return nil
 	}
 	stored.Metadata.Ended = endFromShellEvents(stored.Events)
+	return nil
 }
 
 // endFromShellEvents reads the shell instances for the act that ended the
@@ -197,12 +218,17 @@ func endFromShellEvents(events []StoredEvent) *SessionEnd {
 	return &SessionEnd{Act: SessionConcluded, EndedAt: endedAt}
 }
 
+// StoredEvent carries the store-assigned position and append time. A zero CreatedAt
+// means the historical record has no known timestamp.
 type StoredEvent struct {
+	Sequence     uint64
+	CreatedAt    time.Time
 	CodecVersion uint32
 	Code         string
 	Payload      json.RawMessage
 }
 
+// StoredSession.Version is the last durable event sequence, zero before the first append.
 type StoredSession struct {
 	Metadata SessionMetadata
 	Version  uint64
@@ -253,7 +279,8 @@ type SessionAppend struct {
 }
 
 // SessionStore persists structured metadata plus ordered opaque events. Append
-// is the sole mutation primitive and must compare ExpectedVersion atomically.
+// requires events and atomically compares the last event sequence. It assigns event
+// sequences and timestamps and updates informational metadata in the same write.
 //
 // Compositions must not run mixed engine versions against one session store:
 // metadata carries no version guard (d-tac-8js), so an older engine reading

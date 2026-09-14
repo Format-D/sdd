@@ -36,16 +36,8 @@ type noBlobStore struct{}
 func (noBlobStore) Stage(context.Context, sdd.SessionRef, string, io.Reader) (sdd.StagedBlob, error) {
 	return sdd.StagedBlob{}, nil
 }
-func (noBlobStore) Stat(context.Context, sdd.SessionRef, string) (sdd.StagedBlob, error) {
-	return sdd.StagedBlob{}, nil
-}
 func (noBlobStore) Open(context.Context, sdd.SessionRef, string) (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader("")), nil
-}
-func (noBlobStore) Retain(context.Context, sdd.SessionRef, string, []string) error { return nil }
-func (noBlobStore) Release(context.Context, sdd.SessionRef, string) error          { return nil }
-func (noBlobStore) StagedSessions(context.Context, sdd.SessionRef, int) (sdd.StagedSessionPage, error) {
-	return sdd.StagedSessionPage{}, nil
 }
 func (noBlobStore) DeleteStaged(context.Context, sdd.SessionRef) error { return nil }
 

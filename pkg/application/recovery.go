@@ -410,7 +410,7 @@ func (a *Application) RecoverMutation(ctx context.Context, identity RequestIdent
 }
 
 func (a *Application) terminalRecovery(ctx context.Context, runtime *ProjectRuntime, stored StoredSession, prepared PreparedTransition, binding SessionBinding, actor string, request RecoveryRequest, reason RecoveryReason) (RecoveryResult, error) {
-	next, err := a.releaseAndRecordTerminal(ctx, binding, prepared, recoveryTerminalEvent{
+	next, err := a.recordRecoveryTerminal(ctx, binding, recoveryTerminalEvent{
 		MutationID: prepared.Batch.ID, Digest: prepared.Batch.Digest, Target: prepared.Target,
 		OriginalSubject: stored.Metadata.Subject, OriginalSession: stored.Metadata.ID,
 		Actor: actor, Verb: request.Verb, Reason: request.Reason,
@@ -506,14 +506,9 @@ func appendRecoveryTerminal(ctx context.Context, sessions SessionStore, binding 
 	return sessions.Append(ctx, binding.SessionID, binding.Version, SessionAppend{Events: []StoredEvent{event}})
 }
 
-// releaseAndRecordTerminal is the shared teardown for a finished intent:
-// release its retained blobs, then append the terminal record and return the
-// advanced binding version. Used by operator recovery decisions and the
-// engine's own contention discard alike.
-func (a *Application) releaseAndRecordTerminal(ctx context.Context, binding SessionBinding, prepared PreparedTransition, event recoveryTerminalEvent) (uint64, error) {
-	if err := a.blobs.Release(ctx, prepared.Staged, prepared.Batch.ID); err != nil {
-		return binding.Version, &ApplicationError{Code: ErrorRecoveryRequired, Message: "recovery could not release retained blobs", Cause: err}
-	}
+// recordRecoveryTerminal appends the terminal recovery record and returns its
+// event sequence. Staged bytes remain available until the session is collected.
+func (a *Application) recordRecoveryTerminal(ctx context.Context, binding SessionBinding, event recoveryTerminalEvent) (uint64, error) {
 	return appendRecoveryTerminal(ctx, a.sessions, binding, event)
 }
 

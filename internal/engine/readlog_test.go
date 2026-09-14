@@ -14,7 +14,7 @@ func jsonRoundTripEvents(t *testing.T, events []Event) []Event {
 	var buf bytes.Buffer
 	sink := NewWriterSink(&buf)
 	for _, ev := range events {
-		if err := sink.Append(ev); err != nil {
+		if _, err := sink.Append(ev); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -111,7 +111,7 @@ func serveLaneText(t *testing.T, sv *engine.Serve, name string) string {
 
 type nopSink struct{}
 
-func (nopSink) Append(engine.Event) error { return nil }
+func (nopSink) Append(e engine.Event) (uint64, error) { return uint64(e.Seq), nil }
 
 // startServe loads machine+body against reg and returns a fresh session's
 // opening serve — the draft gate stalls on the missing note, so it serves the

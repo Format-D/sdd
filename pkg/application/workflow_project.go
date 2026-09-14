@@ -65,9 +65,8 @@ func (w *WorkflowSession) instanceProject(instance string) ProjectID {
 	return w.project
 }
 
-// projectFor resolves the target project of the instance whose store a
-// registry function runs over — the engine hands functions the store, not
-// the instance.
+// Contextual graph reads receive the live instance store; commands identify
+// their instance explicitly because their candidate store is a clone.
 func (w *WorkflowSession) projectFor(store *engine.Store) ProjectID {
 	if w.session == nil {
 		return w.project

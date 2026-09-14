@@ -589,9 +589,13 @@ func TestCapture_EditAfterConfirmReopensPlayback(t *testing.T) {
 		t.Fatalf("no entry may be written on a stale confirmation, produced %v", id)
 	}
 
-	// Re-confirming the edited state completes the write (the recorded
-	// override still skips pre-flight).
+	// Changed input invalidates the earlier finding and its override.
 	serve = session.Answer(t, instance, "playback", "confirm", nil, "yes, with the edit")
+	proctest.RequireStep(t, serve, "reviseOrOverride")
+	if got := world.LLM.Calls("preflight"); got != 2 {
+		t.Fatalf("edited input needs a new preflight, got %d calls", got)
+	}
+	serve = session.Answer(t, instance, "reviseOrOverride", "override", nil, "override this finding for the edited input")
 	proctest.RequireStep(t, serve, "verifySummary")
 	serve = session.Answer(t, instance, "verifySummary", "faithful", map[string]any{"fidelityNote": "matches"}, "")
 	proctest.RequireStatus(t, serve, "completed")

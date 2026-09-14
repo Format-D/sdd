@@ -3,8 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"slices"
@@ -39,8 +37,8 @@ func (s *memorySessionStore) Create(_ context.Context, metadata sdd.SessionMetad
 			Code: sdd.ErrorSessionConflict, Message: "session already exists",
 		}
 	}
-	stored := sdd.StoredSession{Metadata: metadata, Version: 1}
-	s.sessions[metadata.ID] = stored
+	stored := sdd.StoredSession{Metadata: metadata}
+	s.sessions[metadata.ID] = cloneSession(stored)
 	return stored, nil
 }
 
@@ -85,6 +83,9 @@ func (s *memorySessionStore) Append(
 	expectedVersion uint64,
 	add sdd.SessionAppend,
 ) (uint64, error) {
+	if len(add.Events) == 0 {
+		return 0, &sdd.ApplicationError{Code: sdd.ErrorInvalidArgument, Message: "session append requires events"}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stored, exists := s.sessions[id]
@@ -105,9 +106,15 @@ func (s *memorySessionStore) Append(
 		}
 		stored.Metadata = *add.Metadata
 	}
-	stored.Events = append(slices.Clip(stored.Events), add.Events...)
-	stored.Version++
-	s.sessions[id] = stored
+	events := slices.Clone(add.Events)
+	now := time.Now().UTC()
+	for i := range events {
+		events[i].Sequence = stored.Version + uint64(i) + 1
+		events[i].CreatedAt = now
+	}
+	stored.Events = append(slices.Clip(stored.Events), events...)
+	stored.Version += uint64(len(events))
+	s.sessions[id] = cloneSession(stored)
 	return stored.Version, nil
 }
 
@@ -120,10 +127,20 @@ func (s *memorySessionStore) Delete(_ context.Context, id sdd.SessionID) error {
 	return nil
 }
 
-// cloneSession detaches the stored event slice so a caller cannot append into
-// the store's own backing array.
+// cloneSession keeps callers from mutating stored events or metadata.
 func cloneSession(stored sdd.StoredSession) sdd.StoredSession {
 	stored.Events = slices.Clone(stored.Events)
+	for i := range stored.Events {
+		stored.Events[i].Payload = bytes.Clone(stored.Events[i].Payload)
+	}
+	if stored.Metadata.Attachment != nil {
+		attachment := *stored.Metadata.Attachment
+		stored.Metadata.Attachment = &attachment
+	}
+	if stored.Metadata.Ended != nil {
+		ended := *stored.Metadata.Ended
+		stored.Metadata.Ended = &ended
+	}
 	return stored
 }
 
@@ -138,31 +155,15 @@ func cmpID(a, b sdd.SessionID) int {
 	}
 }
 
-// memoryStagedBlobStore keeps one staging area per session. Retentions are
-// recorded but never block deletion — the collection pass decides what is safe
-// to remove, not the store.
+// memoryStagedBlobStore keeps immutable bytes scoped to their session.
 type memoryStagedBlobStore struct {
 	mu     sync.Mutex
-	areas  map[sdd.SessionRef]*stagingArea
-	now    func() time.Time
+	areas  map[sdd.SessionRef]map[string][]byte
 	staged int
 }
 
-type stagingArea struct {
-	blobs      map[string]stagedBlob
-	retentions map[string][]string
-}
-
-type stagedBlob struct {
-	blob    sdd.StagedBlob
-	content []byte
-}
-
-func newMemoryStagedBlobStore(now func() time.Time) *memoryStagedBlobStore {
-	if now == nil {
-		now = time.Now
-	}
-	return &memoryStagedBlobStore{areas: map[sdd.SessionRef]*stagingArea{}, now: now}
+func newMemoryStagedBlobStore() *memoryStagedBlobStore {
+	return &memoryStagedBlobStore{areas: map[sdd.SessionRef]map[string][]byte{}}
 }
 
 func (s *memoryStagedBlobStore) Stage(
@@ -175,91 +176,36 @@ func (s *memoryStagedBlobStore) Stage(
 	if err != nil {
 		return sdd.StagedBlob{}, err
 	}
-	sum := sha256.Sum256(content)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// Identity is per stage, not per content: staging the same bytes twice is
 	// two blobs, and each is addressed on its own.
 	s.staged++
 	blob := sdd.StagedBlob{
-		ID:        fmt.Sprintf("blob-%d", s.staged),
-		Session:   session,
-		Digest:    sdd.BlobDigest{Algorithm: "sha256", Value: hex.EncodeToString(sum[:])},
-		Size:      int64(len(content)),
-		Filename:  filename,
-		CreatedAt: s.now().UTC(),
+		ID:       fmt.Sprintf("blob-%d", s.staged),
+		Size:     int64(len(content)),
+		Filename: filename,
 	}
 	area, exists := s.areas[session]
 	if !exists {
-		area = &stagingArea{blobs: map[string]stagedBlob{}, retentions: map[string][]string{}}
+		area = map[string][]byte{}
 		s.areas[session] = area
 	}
-	area.blobs[blob.ID] = stagedBlob{blob: blob, content: content}
+	area[blob.ID] = content
 	return blob, nil
-}
-
-func (s *memoryStagedBlobStore) Stat(_ context.Context, session sdd.SessionRef, id string) (sdd.StagedBlob, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	staged, err := s.lookup(session, id)
-	if err != nil {
-		return sdd.StagedBlob{}, err
-	}
-	return staged.blob, nil
 }
 
 func (s *memoryStagedBlobStore) Open(_ context.Context, session sdd.SessionRef, id string) (io.ReadCloser, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	staged, err := s.lookup(session, id)
+	content, err := s.lookup(session, id)
 	if err != nil {
 		return nil, err
 	}
-	return io.NopCloser(bytes.NewReader(staged.content)), nil
+	return io.NopCloser(bytes.NewReader(content)), nil
 }
 
-func (s *memoryStagedBlobStore) Retain(_ context.Context, session sdd.SessionRef, mutationID string, ids []string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	area, exists := s.areas[session]
-	if !exists {
-		return fmt.Errorf("staging area for %s is gone", session.Session)
-	}
-	area.retentions[mutationID] = slices.Clone(ids)
-	return nil
-}
-
-// Release drops a retention. A staging area that is already gone stays gone —
-// releasing must not recreate it.
-func (s *memoryStagedBlobStore) Release(_ context.Context, session sdd.SessionRef, mutationID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if area, exists := s.areas[session]; exists {
-		delete(area.retentions, mutationID)
-	}
-	return nil
-}
-
-func (s *memoryStagedBlobStore) StagedSessions(_ context.Context, after sdd.SessionRef, limit int) (sdd.StagedSessionPage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	refs := make([]sdd.SessionRef, 0, len(s.areas))
-	for ref := range s.areas {
-		if !ref.AtOrBefore(after) {
-			refs = append(refs, ref)
-		}
-	}
-	slices.SortFunc(refs, sdd.SessionRef.Compare)
-	page := sdd.StagedSessionPage{Sessions: refs}
-	if limit > 0 && len(refs) > limit {
-		page.Sessions = refs[:limit]
-		page.Next = refs[limit-1]
-	}
-	return page, nil
-}
-
-// DeleteStaged removes a session's blobs together with its retentions, and is
-// idempotent for the same reason Delete is.
+// DeleteStaged removes every blob belonging to the session.
 func (s *memoryStagedBlobStore) DeleteStaged(_ context.Context, session sdd.SessionRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -267,14 +213,14 @@ func (s *memoryStagedBlobStore) DeleteStaged(_ context.Context, session sdd.Sess
 	return nil
 }
 
-func (s *memoryStagedBlobStore) lookup(session sdd.SessionRef, id string) (stagedBlob, error) {
+func (s *memoryStagedBlobStore) lookup(session sdd.SessionRef, id string) ([]byte, error) {
 	area, exists := s.areas[session]
 	if !exists {
-		return stagedBlob{}, fmt.Errorf("no staging area for session %s", session.Session)
+		return nil, fmt.Errorf("no staging area for session %s", session.Session)
 	}
-	staged, exists := area.blobs[id]
+	content, exists := area[id]
 	if !exists {
-		return stagedBlob{}, fmt.Errorf("staged blob %s not found", id)
+		return nil, fmt.Errorf("staged blob %s not found", id)
 	}
-	return staged, nil
+	return content, nil
 }

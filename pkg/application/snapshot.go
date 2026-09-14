@@ -94,6 +94,11 @@ func AttachmentDirRelPath(entryID string) (string, error) {
 	return model.AttachDirRelPath(entryID)
 }
 
+// EntryRelPath returns the graph-relative document path for an entry ID.
+func EntryRelPath(entryID string) (string, error) {
+	return model.IDToRelPath(entryID)
+}
+
 // BuildSnapshot is the single in-memory graph construction path. It adapts the
 // canonical documents into a storage-neutral source and hands them to the
 // shared GraphFinder, which applies the one semantic gate (parse, embedded-base
@@ -207,7 +212,7 @@ func LoadSnapshotFS(ctx context.Context, project ProjectID, revision string, fsy
 			data.WIP = append(data.WIP, WIPDocument{LogicalPath: rel, Content: string(raw)})
 			continue
 		}
-		document, err := parseEntryDocument(rel, raw)
+		document, err := ParseEntryDocument(rel, raw)
 		if err != nil {
 			// Decode failures become health issues; source read failures stay errors.
 			data.Unreadable = append(data.Unreadable, DocumentIssue{LogicalPath: rel, Message: err.Error()})
@@ -239,7 +244,8 @@ func LoadSnapshotFS(ctx context.Context, project ProjectID, revision string, fsy
 	return BuildSnapshot(ctx, data)
 }
 
-func parseEntryDocument(logicalPath string, raw []byte) (EntryDocument, error) {
+// ParseEntryDocument decodes stored entry bytes; BuildSnapshot owns graph validation.
+func ParseEntryDocument(logicalPath string, raw []byte) (EntryDocument, error) {
 	text := string(raw)
 	if !strings.HasPrefix(text, "---\n") {
 		return EntryDocument{}, fmt.Errorf("missing YAML frontmatter")

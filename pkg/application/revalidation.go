@@ -33,7 +33,7 @@ func revalidatePreparedTransition(ctx context.Context, snapshot *Snapshot, prepa
 		if change.Document == nil {
 			return &ApplicationError{Code: ErrorMigrationRequired, Message: "prepared entry mutation lacks structured document facts", Version: prepared.Version}
 		}
-		parsed, err := parseEntryDocument(change.LogicalPath, change.CanonicalBytes)
+		parsed, err := ParseEntryDocument(change.LogicalPath, change.CanonicalBytes)
 		if err != nil {
 			return fmt.Errorf("sdd: validating prepared canonical entry %q: %w", change.LogicalPath, err)
 		}
