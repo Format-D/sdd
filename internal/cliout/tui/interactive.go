@@ -3,12 +3,13 @@
 // dormant → armed → live → done lifecycle so instant work never starts a
 // program) and the reusable init input prompts (text, select, multi-select,
 // confirm). Both surfaces route through the one shared program runner
-// (runner.go). It depends on the bubble-tea-free core in internal/cliout; only
-// cmd/sdd imports this package.
+// (runner.go). It depends on the bubble-tea-free core in internal/cliout;
+// internal/cliapp supplies the command streams.
 package tui
 
 import (
 	"context"
+	"io"
 	"os"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,16 +18,14 @@ import (
 	sddmodel "github.com/networkteam/sdd/internal/model"
 )
 
-// runReal runs the coordinator's program through the shared runner.
-func runReal(m tea.Model) (tea.Model, error) {
-	return runProgram(m, coordinatorSurface)
-}
-
 // View specs a phase-labeled footer for one operation: an initial phase label,
 // an optional progress reporter (phase + count snapshots), and an opt-in log
 // stream. The footer label tracks the reporter's current phase, so commands
 // never decide a label string mid-run.
 type View struct {
+	// Reader and Writer default to stdin and stderr for local terminal use.
+	Reader io.Reader
+	Writer io.Writer
 	// InitialPhase is the footer label shown until the work reports its first
 	// phase; from then on the label derives from the reporter's Phase snapshots.
 	InitialPhase sddmodel.Phase
@@ -72,7 +71,12 @@ func (s starter) Start(backlog []cliout.LogEntry, live *cliout.LogConsumer) ([]c
 // operations. The caller has already established this is a TTY; off-TTY paths
 // never reach here and keep plain slog on stderr.
 func Interactive[T any](ctx context.Context, policy cliout.Policy, view View, work func(context.Context) (T, error)) (T, error) {
-	return interactiveWith(ctx, policy, view, work, runReal)
+	if view.Writer == nil {
+		view.Writer = os.Stderr
+	}
+	return interactiveWith(ctx, policy, view, work, func(m tea.Model) (tea.Model, error) {
+		return runProgram(m, coordinatorSurface, view.Reader, view.Writer)
+	})
 }
 
 func interactiveWith[T any](
@@ -87,7 +91,7 @@ func interactiveWith[T any](
 
 	coord := cliout.NewCoordinator(cliout.CoordinatorConfig{
 		Policy:     policy,
-		Stderr:     os.Stderr,
+		Stderr:     view.Writer,
 		StreamLogs: view.StreamLogs,
 		Progress:   view.Progress,
 	})

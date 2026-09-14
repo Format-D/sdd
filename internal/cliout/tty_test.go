@@ -1,9 +1,26 @@
 package cliout
 
 import (
+	"bytes"
 	"os"
+	"strings"
 	"testing"
 )
+
+func TestSuppliedStreamsWithoutTerminalDescriptors(t *testing.T) {
+	for name, stream := range map[string]any{
+		"nil":      nil,
+		"nil file": (*os.File)(nil),
+		"reader":   strings.NewReader("input"),
+		"writer":   &bytes.Buffer{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if IsTerminal(stream) || IsInteractive(stream) {
+				t.Fatal("a stream without a terminal descriptor must use plain output")
+			}
+		})
+	}
+}
 
 func TestIsInteractive_NilFile(t *testing.T) {
 	if IsInteractive(nil) {

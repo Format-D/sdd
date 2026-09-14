@@ -10,7 +10,8 @@
 // HTTP uses no transport session headers or standalone GET stream. POST responses
 // may stream SSE. Client name and version from initialization may be unavailable.
 //
-// RunStdio is the local process transport. HTTP compositions use Handler,
+// Run accepts a caller-supplied transport; RunStdio uses process stdin/stdout.
+// HTTP compositions use Handler,
 // coordinate its lifecycle through Shutdown, and own the listener, transport
 // policy, project routing, storage, LLM, embeddings, search index, and
 // mutation finalizers through public SDD ports.

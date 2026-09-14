@@ -13,7 +13,6 @@ import (
 	"github.com/networkteam/sdd/internal/model"
 	sdd "github.com/networkteam/sdd/pkg/application"
 	pkgllm "github.com/networkteam/sdd/pkg/llm"
-	localadapter "github.com/networkteam/sdd/pkg/local"
 )
 
 // conflictInjectingStore forces the leading `remaining` Apply calls to return
@@ -203,32 +202,17 @@ func preparedWIP(t *testing.T, graph sdd.GraphStore, binding sdd.SessionBinding,
 }
 
 func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
-	graph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "example", GraphDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessions, err := localadapter.NewFilesystemSessionStoreAt(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	blobs, err := localadapter.NewFilesystemStagedBlobStoreAt(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	const captures = 2
 	var preflightCalls int64
 	entered := make(chan struct{}, captures)
 	release := make(chan struct{})
-	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
-		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main", Graph: graph,
-		LLM: pkgllm.RunnerFunc(func(_ context.Context, request pkgllm.Request) (pkgllm.Result, error) {
+	f := newWriteFixture(t, writeFixtureOptions{
+		Runner: pkgllm.RunnerFunc(func(_ context.Context, request pkgllm.Request) (pkgllm.Result, error) {
 			identity := pkgllm.Identity{Provider: "test", Model: "test"}
 			if request.Purpose == pkgllm.PurposePreflight {
 				atomic.AddInt64(&preflightCalls, 1)
 				// Artificially slow stage: block until both captures have
-				// pinned their prepare-time snapshot and entered pre-flight,
-				// so their applies genuinely interleave through the retry.
+				// entered preflight before either publication starts.
 				entered <- struct{}{}
 				<-release
 				return pkgllm.Result{Text: `{"findings":[]}`, Identity: identity}, nil
@@ -236,18 +220,9 @@ func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
 			return pkgllm.Result{Text: "Interleaved capture summary.", Identity: identity}, nil
 		}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: &runtimeAccessResolver{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs})
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := sdd.RequestIdentity{Subject: "christopher"}
-
 	bindings := make([]sdd.SessionBinding, captures)
 	for i := range bindings {
-		bindings[i] = openBinding(t, sessions, identity.Subject, sdd.SessionID(fmt.Sprintf("capture-%d", i)))
+		bindings[i] = openBinding(t, f.sessions, f.identity.Subject, sdd.SessionID(fmt.Sprintf("capture-%d", i)))
 	}
 
 	type outcome struct {
@@ -257,9 +232,10 @@ func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
 	results := make(chan outcome, captures)
 	for i := range bindings {
 		go func(n int) {
-			created, err := captureEntry(t, application, identity, "example", bindings[n], sdd.EntryDraft{
+			draft := identifiedCaptureDraft(bindings[n], uint64(n+1), sdd.EntryDraft{
 				Kind: "gap", Layer: "tactical", Body: fmt.Sprintf("Interleaved capture body %d.", n), Confidence: "high",
 			})
+			created, err := preflightAndCreateEntry(t, f.app, f.identity, bindings[n], draft)
 			results <- outcome{id: created.EntryID, err: err}
 		}(i)
 	}
@@ -282,7 +258,7 @@ func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
 	if atomic.LoadInt64(&preflightCalls) != captures {
 		t.Fatalf("pre-flight ran %d times, want %d (once per capture)", preflightCalls, captures)
 	}
-	recoveries, err := application.ListRecoveries(t.Context(), identity, "example", false)
+	recoveries, err := f.app.ListRecoveries(t.Context(), f.identity, "example", false)
 	if err != nil || len(recoveries.Items) != 0 {
 		t.Fatalf("interleaved capture recovery projection = %+v, %v; want none", recoveries, err)
 	}

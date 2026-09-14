@@ -1,12 +1,52 @@
 package tui
 
 import (
+	"bytes"
+	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 )
+
+func TestPromptsUseSuppliedStreams(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  any
+		run   func(io.Reader, io.Writer) (any, error)
+	}{
+		{"text", "supplied\r", "supplied", func(reader io.Reader, writer io.Writer) (any, error) {
+			return RunTextPrompt(TextPrompt{Reader: reader, Writer: writer, Label: "Stream prompt", Width: 20})
+		}},
+		{"confirm", "y\r", true, func(reader io.Reader, writer io.Writer) (any, error) {
+			return RunConfirm(ConfirmPrompt{Reader: reader, Writer: writer, Prompt: "Stream prompt"})
+		}},
+		{"select", "j\r", "second", func(reader io.Reader, writer io.Writer) (any, error) {
+			return RunSelect(SelectPrompt[string]{Reader: reader, Writer: writer, Header: "Stream prompt",
+				Options: []SelectOption[string]{{Label: "First", Value: "first"}, {Label: "Second", Value: "second"}},
+			})
+		}},
+		{"multi-select", " \r", []string{"first"}, func(reader io.Reader, writer io.Writer) (any, error) {
+			return RunMultiSelect(MultiSelectPrompt[string]{Reader: reader, Writer: writer, Header: "Stream prompt",
+				Options: []MultiSelectOption[string]{{Label: "First", Value: "first"}},
+			})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			got, err := tc.run(strings.NewReader(tc.input), &output)
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("prompt = %v, %v; want %v", got, err, tc.want)
+			}
+			if output.Len() == 0 {
+				t.Fatal("supplied writer received no terminal output")
+			}
+		})
+	}
+}
 
 func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg(tea.Key{Code: code}) }
 

@@ -1,25 +1,24 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/urfave/cli/v3"
 
 	sdd "github.com/networkteam/sdd/pkg/application"
 	"github.com/networkteam/slogutils"
 
 	"github.com/networkteam/sdd/internal/git"
-	"github.com/networkteam/sdd/internal/meta"
 	"github.com/networkteam/sdd/internal/model"
 	"github.com/networkteam/sdd/internal/repos"
 	pkgllm "github.com/networkteam/sdd/pkg/llm"
@@ -85,25 +84,22 @@ func serveCmd() *cli.Command {
 				Application:   application,
 				LocalIdentity: identity,
 				LocalClient:   transport == "stdio",
-				Version:       version,
+				Version:       cmd.Root().Version,
 			})
 			if err != nil {
 				return err
 			}
 
-			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-			defer stop()
-
 			switch transport {
 			case "stdio":
-				return srv.RunStdio(ctx)
+				return srv.Run(ctx, commandTransport(cmd.Reader, cmd.Writer))
 			case "http":
 				token := cmd.String("auth-token")
 				if token == "" {
 					return fmt.Errorf("transport=http requires --auth-token (or SDD_SERVE_TOKEN) — the write path must not be open to anyone who can reach the address")
 				}
 				addr := cmd.String("addr")
-				fmt.Fprintf(os.Stderr, "sdd serve: listening on http://%s (bearer token required)\n", addr)
+				fmt.Fprintf(cmd.ErrWriter, "sdd serve: listening on http://%s (bearer token required)\n", addr)
 				return runLocalHTTP(ctx, addr, token, srv)
 			default:
 				return fmt.Errorf("invalid transport %q: use stdio or http", cmd.String("transport"))
@@ -111,6 +107,22 @@ func serveCmd() *cli.Command {
 		}),
 	}
 }
+
+func commandTransport(reader io.Reader, writer io.Writer) *mcp.IOTransport {
+	input, ok := reader.(io.ReadCloser)
+	if !ok {
+		input = io.NopCloser(reader)
+	}
+	output, ok := writer.(io.WriteCloser)
+	if !ok {
+		output = writerWithoutClose{writer}
+	}
+	return &mcp.IOTransport{Reader: input, Writer: output}
+}
+
+type writerWithoutClose struct{ io.Writer }
+
+func (writerWithoutClose) Close() error { return nil }
 
 func runLocalHTTP(ctx context.Context, addr, token string, app *mcpserver.Server) error {
 	httpServer := &http.Server{
@@ -286,7 +298,7 @@ func buildLocalApplication(ctx context.Context, cmd *cli.Command, graphDir, sddD
 	if localEmbedder.Embedder != nil {
 		embeddings = localEmbedder
 	}
-	targets, err := newLocalMutationTargets(project, filepath.Dir(sddDir))
+	targets, err := localadapter.NewRepositoryTargets(project, filepath.Dir(sddDir), locations.ConfigPath)
 	if err != nil {
 		return nil, "", sdd.RequestIdentity{}, err
 	}
@@ -416,62 +428,6 @@ func (s localBranchReadStore) AcquireSnapshot(ctx context.Context, q sdd.Snapsho
 		return s.branches.AcquireSnapshot(ctx, q)
 	}
 	return s.GraphStore.(sdd.SnapshotReader).AcquireSnapshot(ctx, q)
-}
-
-func newLocalMutationTargets(project sdd.ProjectID, serverCheckout string) (*localadapter.GitWorktreeAcquirer, error) {
-	return localadapter.NewGitWorktreeAcquirer(localadapter.GitWorktreeAcquirerOptions{
-		Project: project, ServerCheckout: serverCheckout,
-		ReadFactory: func(ctx context.Context, checkout string, q sdd.SnapshotReadQuery) (*sdd.AcquiredSnapshot, error) {
-			cfg, err := resolveConfigAt(filepath.Join(checkout, model.SDDDirName))
-			if err != nil {
-				return nil, err
-			}
-			if cfg == nil {
-				return nil, fmt.Errorf("read checkout %q has no SDD configuration", checkout)
-			}
-			id := sdd.ProjectID(cfg.RepoID)
-			if id == "" {
-				id = "local"
-			}
-			if id != project {
-				return nil, fmt.Errorf("read checkout %q does not contain project %s", checkout, project)
-			}
-			graph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{
-				Project: project, GraphDir: meta.ResolveGraphDir(checkout, cfg), Branch: q.Branch,
-			})
-			if err != nil {
-				return nil, err
-			}
-			return graph.AcquireSnapshot(ctx, q)
-		},
-		Factory: func(_ context.Context, checkout string, target sdd.MutationTarget) (sdd.GraphStore, []sdd.MutationFinalizer, func() error, error) {
-			targetCfg, cfgErr := resolveConfigAt(filepath.Join(checkout, model.SDDDirName))
-			if cfgErr != nil {
-				return nil, nil, nil, fmt.Errorf("loading mutation target config for %s: %w", target.Branch, cfgErr)
-			}
-			if targetCfg == nil {
-				return nil, nil, nil, fmt.Errorf("mutation target checkout %q does not contain project %s", checkout, project)
-			}
-			targetProject := sdd.ProjectID(targetCfg.RepoID)
-			if targetProject == "" {
-				targetProject = "local"
-			}
-			if targetProject != project {
-				return nil, nil, nil, fmt.Errorf("mutation target checkout %q does not contain project %s", checkout, project)
-			}
-			targetGraphDir := meta.ResolveGraphDir(checkout, targetCfg)
-			graphDirRel := targetCfg.GraphDir
-			if graphDirRel == "" {
-				graphDirRel = model.DefaultGraphDir
-			}
-			gitFinalizer := localadapter.GitFinalizer{Checkout: checkout, GraphDir: graphDirRel, Branch: target.Branch}
-			targetGraph, graphErr := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: project, GraphDir: targetGraphDir, Branch: target.Branch, PublicationGit: &gitFinalizer})
-			if graphErr != nil {
-				return nil, nil, nil, graphErr
-			}
-			return targetGraph, []sdd.MutationFinalizer{gitFinalizer}, func() error { return nil }, nil
-		},
-	})
 }
 
 func optionalSearchIndex(embeddings embed.Embedder, index sdd.SearchIndexStore) sdd.SearchIndexStore {

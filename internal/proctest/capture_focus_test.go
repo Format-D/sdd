@@ -72,22 +72,62 @@ func TestCapture_FocusUnresolvableTargetBlocks(t *testing.T) {
 	}
 }
 
-func TestCapture_FocusRendersActorsAndWhen(t *testing.T) {
-	_, session := newCaptureWorld(t, "focus-render")
+func TestCapture_FocusRendersAndPersistsActorsAndWhen(t *testing.T) {
+	world, session := newCaptureWorld(t, "focus-actors-when")
 	serve := session.Start(t, "capture", nil)
+	instance := serve.Instance
 	draft := focusDraft()
-	draft["involvement"] = []any{map[string]any{
-		"target": captureRefID,
-		"actors": []any{"Christopher"},
-		"when":   map[string]any{"from": "2026-01-01", "to": "2026-02-01"},
-	}}
-	draft["focusWhen"] = map[string]any{"from": "2026-01-01"}
-	serve = session.Report(t, serve.Instance, draft)
+	draft["involvement"] = []any{
+		map[string]any{
+			"target": captureRefID, "actors": []any{"Christopher"},
+			"when": map[string]any{"from": "2026-01-01", "to": "2026-02-01"},
+		},
+		map[string]any{"target": captureRefID},
+		map[string]any{"target": captureRefID, "actors": []any{}},
+	}
+	draft["focusActors"] = []any{"Christopher"}
+	draft["focusWhen"] = map[string]any{"from": "2026-01-01", "to": "2026-03-01"}
+	serve = session.Report(t, instance, draft)
 	proctest.RequireStep(t, serve, "playback")
 	for _, want := range []string{"Christopher", "2026-01-01", "2026-02-01", "focusWhen:"} {
 		if !strings.Contains(serve.Instructions, want) {
 			t.Errorf("playback should render %q, got %q", want, serve.Instructions)
 		}
+	}
+
+	serve = session.Answer(t, instance, "playback", "confirm", nil, "confirm")
+	proctest.RequireStep(t, serve, "verifySummary")
+	serve = session.Answer(t, instance, "verifySummary", "faithful", map[string]any{"fidelityNote": "matches"}, "")
+	proctest.RequireStatus(t, serve, "completed")
+	entryID, _ := serve.Produced["entryId"].(string)
+	entry := proctest.LoadEntry(t, world.GraphDir, entryID)
+	if !entry.IsFocus() || len(entry.FocusActors) != 1 || entry.FocusActors[0] != "Christopher" {
+		t.Fatalf("persisted focus: kind=%s actors=%v", entry.Kind, entry.FocusActors)
+	}
+	if entry.FocusWhen == nil || entry.FocusWhen.From != "2026-01-01" || entry.FocusWhen.To != "2026-03-01" {
+		t.Errorf("focus when = %+v", entry.FocusWhen)
+	}
+	if len(entry.Involvement) != 3 {
+		t.Fatalf("involvement = %+v", entry.Involvement)
+	}
+	for _, involvement := range entry.Involvement {
+		if involvement.Target != captureRefID {
+			t.Errorf("involvement target = %q, want %q", involvement.Target, captureRefID)
+		}
+	}
+	assigned := entry.Involvement[0]
+	if !assigned.ActorsSet || len(assigned.Actors) != 1 || assigned.Actors[0] != "Christopher" {
+		t.Errorf("assigned actors = %+v", assigned)
+	}
+	if assigned.When == nil || assigned.When.From != "2026-01-01" || assigned.When.To != "2026-02-01" {
+		t.Errorf("involvement when = %+v", assigned.When)
+	}
+	if entry.Involvement[1].ActorsSet {
+		t.Error("omitted actors became explicit")
+	}
+	empty := entry.Involvement[2]
+	if !empty.ActorsSet || len(empty.Actors) != 0 {
+		t.Errorf("explicitly empty actors = %+v", empty)
 	}
 }
 

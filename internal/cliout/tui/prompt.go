@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -16,6 +17,9 @@ var ErrPromptCancelled = errors.New("prompt cancelled")
 // TextPrompt configures a single-line text-input prompt. The rendered line is
 // "<Label> [<Default>]: <input>"; empty input returns Default.
 type TextPrompt struct {
+	// Reader and Writer default to stdin and stdout.
+	Reader  io.Reader
+	Writer  io.Writer
 	Label   string
 	Default string
 	Width   int
@@ -70,7 +74,7 @@ func (m textPromptModel) value() (string, bool) {
 // RunTextPrompt runs the text prompt on a TTY, returning the entered value
 // (Default on empty input) or ErrPromptCancelled if the user aborts.
 func RunTextPrompt(cfg TextPrompt) (string, error) {
-	fm, err := runProgram(newTextPromptModel(cfg), promptSurface)
+	fm, err := runProgram(newTextPromptModel(cfg), promptSurface, cfg.Reader, cfg.Writer)
 	if err != nil {
 		return "", err
 	}
@@ -83,6 +87,8 @@ func RunTextPrompt(cfg TextPrompt) (string, error) {
 
 // ConfirmPrompt configures a single-char [y/N] confirmation.
 type ConfirmPrompt struct {
+	Reader io.Reader
+	Writer io.Writer
 	Prompt string
 }
 
@@ -144,7 +150,7 @@ func (m confirmPromptModel) result() bool {
 // RunConfirm runs the confirmation prompt on a TTY. Aborting (ctrl+c / esc) or
 // empty input yields false without an error — the safe "leave it alone" side.
 func RunConfirm(cfg ConfirmPrompt) (bool, error) {
-	fm, err := runProgram(newConfirmPromptModel(cfg), promptSurface)
+	fm, err := runProgram(newConfirmPromptModel(cfg), promptSurface, cfg.Reader, cfg.Writer)
 	if err != nil {
 		return false, err
 	}
@@ -162,6 +168,8 @@ type SelectOption[T any] struct {
 // SelectPrompt configures a cursor-navigated single-select. Header is printed
 // on its own line above the options; Cursor is the initial selection.
 type SelectPrompt[T any] struct {
+	Reader  io.Reader
+	Writer  io.Writer
 	Header  string
 	Options []SelectOption[T]
 	Cursor  int
@@ -222,7 +230,7 @@ func (m selectModel[T]) View() tea.View {
 // option's value or ErrPromptCancelled if the user aborts.
 func RunSelect[T any](cfg SelectPrompt[T]) (T, error) {
 	var zero T
-	fm, err := runProgram(newSelectModel(cfg), promptSurface)
+	fm, err := runProgram(newSelectModel(cfg), promptSurface, cfg.Reader, cfg.Writer)
 	if err != nil {
 		return zero, err
 	}
@@ -245,6 +253,8 @@ type MultiSelectOption[T any] struct {
 // MultiSelectPrompt configures a cursor-navigated multi-select toggled with
 // space; enter confirms only once at least one option is selected.
 type MultiSelectPrompt[T any] struct {
+	Reader  io.Reader
+	Writer  io.Writer
 	Header  string
 	Options []MultiSelectOption[T]
 }
@@ -327,7 +337,7 @@ func (m multiSelectModel[T]) selectedValues() []T {
 // RunMultiSelect runs the multi-select prompt on a TTY, returning the selected
 // options' values in option order, or ErrPromptCancelled if aborted.
 func RunMultiSelect[T any](cfg MultiSelectPrompt[T]) ([]T, error) {
-	fm, err := runProgram(newMultiSelectModel(cfg), promptSurface)
+	fm, err := runProgram(newMultiSelectModel(cfg), promptSurface, cfg.Reader, cfg.Writer)
 	if err != nil {
 		return nil, err
 	}

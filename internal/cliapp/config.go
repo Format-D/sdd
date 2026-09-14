@@ -1,10 +1,10 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"text/tabwriter"
 
@@ -41,7 +41,7 @@ func configCmd() *cli.Command {
 					if cmd.Args().Len() > 1 {
 						return fmt.Errorf("usage: sdd config get [<key-or-prefix>]")
 					}
-					return runConfigGet(cmd.Args().First())
+					return runConfigGet(cmd.Writer, cmd.Args().First())
 				},
 			},
 			{
@@ -62,7 +62,7 @@ func configCmd() *cli.Command {
 					if cmd.Bool("local") {
 						target = "local"
 					}
-					return runConfigSet(ctx, target, cmd.Args().Get(0), cmd.Args().Get(1))
+					return runConfigSet(ctx, cmd.Writer, cmd.ErrWriter, target, cmd.Args().Get(0), cmd.Args().Get(1))
 				},
 			},
 			{
@@ -83,7 +83,7 @@ func configCmd() *cli.Command {
 					if cmd.Bool("local") {
 						target = "local"
 					}
-					return runConfigUnset(ctx, target, cmd.Args().First())
+					return runConfigUnset(ctx, cmd.Writer, cmd.ErrWriter, target, cmd.Args().First())
 				},
 			},
 		},
@@ -111,22 +111,22 @@ func runEffectiveConfig(cmd *cli.Command, key string) error {
 		return err
 	}
 	if cmd.String("format") == "json" {
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(cmd.Writer)
 		enc.SetIndent("", "  ")
 		return enc.Encode(result.Entries)
 	}
-	if err := printConfigEntries(result.Entries); err != nil {
+	if err := printConfigEntries(cmd.Writer, result.Entries); err != nil {
 		return err
 	}
 	// The effective table answers "what will happen", and a setting that does
 	// nothing is part of that answer.
 	if key == "" {
-		return printUnknownConfigKeys()
+		return printUnknownConfigKeys(cmd.ErrWriter)
 	}
 	return nil
 }
 
-func printUnknownConfigKeys() error {
+func printUnknownConfigKeys(errWriter io.Writer) error {
 	f, err := newReadFinder()
 	if err != nil {
 		return err
@@ -142,14 +142,14 @@ func printUnknownConfigKeys() error {
 	if len(result.Keys) == 0 {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "\nignored — this sdd does not know these keys:\n")
+	fmt.Fprintf(errWriter, "\nignored — this sdd does not know these keys:\n")
 	for _, k := range result.Keys {
-		fmt.Fprintf(os.Stderr, "  %s  (%s)\n", k.Key, k.File)
+		fmt.Fprintf(errWriter, "  %s  (%s)\n", k.Key, k.File)
 	}
 	return nil
 }
 
-func runConfigGet(key string) error {
+func runConfigGet(writer io.Writer, key string) error {
 	result, err := effectiveConfigResult(key)
 	if err != nil {
 		return err
@@ -163,25 +163,25 @@ func runConfigGet(key string) error {
 	// An exact single-key hit prints the bare value (script-friendly);
 	// a subtree or the whole config renders as the provenance table.
 	if len(result.Entries) == 1 && result.Entries[0].Key == key {
-		fmt.Println(result.Entries[0].Value)
+		fmt.Fprintln(writer, result.Entries[0].Value)
 		return nil
 	}
-	return printConfigEntries(result.Entries)
+	return printConfigEntries(writer, result.Entries)
 }
 
 // tableValueEscaper keeps multi-line values on one table row; the bare
 // single-value output stays raw.
 var tableValueEscaper = strings.NewReplacer("\n", `\n`, "\t", `\t`)
 
-func printConfigEntries(entries []query.ConfigEntry) error {
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+func printConfigEntries(writer io.Writer, entries []query.ConfigEntry) error {
+	w := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
 	for _, e := range entries {
 		fmt.Fprintf(w, "%s\t%s\t(%s)\n", e.Key, tableValueEscaper.Replace(e.Value), e.Source)
 	}
 	return w.Flush()
 }
 
-func runConfigSet(ctx context.Context, target, key, value string) error {
+func runConfigSet(ctx context.Context, writer, errWriter io.Writer, target, key, value string) error {
 	// sddDir is optional for global writes — `sdd config set` must work
 	// outside any repo (that is the point of the global layer).
 	sddDir, err := resolveSDDDir()
@@ -193,17 +193,18 @@ func runConfigSet(ctx context.Context, target, key, value string) error {
 		return err
 	}
 	h := handlers.New(handlers.Options{
+		Stderr: errWriter,
 		SDDDir: sddDir,
 		Repos:  mgr,
 	})
 	if err := h.ConfigSet(ctx, &command.ConfigSetCmd{Target: target, Key: key, Value: value}); err != nil {
 		return err
 	}
-	fmt.Printf("%s = %s (%s)\n", key, value, target)
+	fmt.Fprintf(writer, "%s = %s (%s)\n", key, value, target)
 	return nil
 }
 
-func runConfigUnset(ctx context.Context, target, key string) error {
+func runConfigUnset(ctx context.Context, writer, errWriter io.Writer, target, key string) error {
 	// sddDir is optional for global writes, exactly as in runConfigSet.
 	sddDir, err := resolveSDDDir()
 	if err != nil {
@@ -214,12 +215,13 @@ func runConfigUnset(ctx context.Context, target, key string) error {
 		return err
 	}
 	h := handlers.New(handlers.Options{
+		Stderr: errWriter,
 		SDDDir: sddDir,
 		Repos:  mgr,
 	})
 	if err := h.ConfigUnset(ctx, &command.ConfigUnsetCmd{Target: target, Key: key}); err != nil {
 		return err
 	}
-	fmt.Printf("%s removed (%s)\n", key, target)
+	fmt.Fprintf(writer, "%s removed (%s)\n", key, target)
 	return nil
 }

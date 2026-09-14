@@ -85,7 +85,12 @@ func New(opts Options) (*Server, error) {
 // RunStdio serves a single local connection over stdin/stdout until the
 // transport closes or ctx is cancelled.
 func (s *Server) RunStdio(ctx context.Context) error {
-	runErr := s.mcp.Run(ctx, &mcp.StdioTransport{})
+	return s.Run(ctx, &mcp.StdioTransport{})
+}
+
+// Run serves the supplied transport and shuts down the server when it ends.
+func (s *Server) Run(ctx context.Context, transport mcp.Transport) error {
+	runErr := s.mcp.Run(ctx, transport)
 	return errors.Join(runErr, s.Shutdown(context.Background()))
 }
 

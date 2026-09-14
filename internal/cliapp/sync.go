@@ -1,11 +1,10 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -41,11 +40,11 @@ func syncCmd() *cli.Command {
 			if !cmd.Bool("pull") {
 				return errors.New("sync: specify --pull to merge upstream changes into the shared graph")
 			}
-			handler := handlers.New(handlers.Options{Puller: git.CLI{}})
+			handler := handlers.New(handlers.Options{Stderr: cmd.ErrWriter, Puller: git.CLI{}})
 			return handler.SyncPull(ctx, &command.SyncPullCmd{
 				OnPulled: func(output string) {
 					if output != "" {
-						fmt.Fprintln(os.Stdout, output)
+						fmt.Fprintln(cmd.Writer, output)
 					}
 				},
 			})

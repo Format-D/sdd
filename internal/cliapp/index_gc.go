@@ -1,9 +1,8 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/urfave/cli/v3"
@@ -78,14 +77,15 @@ that version has stopped.`,
 				}
 				// Same split as sdd stats: agents and pipes get JSON, a
 				// terminal gets the styled table (d-cpt-owo).
-				if cmd.String("format") == "json" || !isTerminal(os.Stdout) {
-					return presenters.RenderIndexVersionsJSON(os.Stdout, results)
+				if cmd.String("format") == "json" || !isTerminal(cmd.Writer) {
+					return presenters.RenderIndexVersionsJSON(cmd.Writer, results)
 				}
-				presenters.RenderIndexVersionsTable(os.Stdout, results)
+				presenters.RenderIndexVersionsTable(cmd.Writer, results)
 				return nil
 			}
 			for _, s := range stores {
 				h := handlers.NewIndexHandler(handlers.IndexHandlerOptions{
+					Stderr:   cmd.ErrWriter,
 					GraphDir: s.graphDir, IndexDir: s.indexDir, Embedder: emb, Reader: reader, ExcludeEmbedded: s.excludeEmbedded,
 				})
 				err := h.DropVersions(ctx, &command.DropIndexVersionsCmd{
@@ -98,7 +98,7 @@ that version has stopped.`,
 						if len(d.Missing) > 0 {
 							detail += fmt.Sprintf(" · no %s group here", strings.Join(d.Missing, ", "))
 						}
-						presenters.RenderResultLine(os.Stdout, fmt.Sprintf("dropped %d versions from %s", d.Versions, s.label), detail)
+						presenters.RenderResultLine(cmd.Writer, fmt.Sprintf("dropped %d versions from %s", d.Versions, s.label), detail)
 					},
 				})
 				if err != nil {
@@ -163,7 +163,7 @@ func selectIndexStores(cmd *cli.Command) ([]indexStore, handlers.IndexEmbedder, 
 			return nil, emb, nil, err
 		}
 		if !repos.IsCloned(cacheDir) {
-			presenters.RenderResultLine(os.Stderr, "skipped "+repoID, "no local cache, so no index store; `sdd index --repo "+repoID+"` creates one")
+			presenters.RenderResultLine(cmd.ErrWriter, "skipped "+repoID, "no local cache, so no index store; `sdd index --repo "+repoID+"` creates one")
 			continue
 		}
 		cacheGraph, err := repos.GraphDir(cacheDir)

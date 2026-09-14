@@ -383,10 +383,11 @@ func TestCreateEntryResolvesConcreteDefaultWithoutCWDAndReleasesAroundLLM(t *tes
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "create-default")
 	t.Chdir(t.TempDir())
-	created, err := captureEntry(t, application, identity, "example", binding, sdd.EntryDraft{
+	draft := identifiedCaptureDraft(binding, 1, sdd.EntryDraft{
 		Kind: "fact", Layer: "tactical", Body: "Concrete target resolution must remain independent of the process working directory.", Confidence: "high",
 		Topics: []string{"implementation/engine"}, Index: &sdd.FactIndex{Title: "Concrete target resolution", Topic: "implementation/engine"},
 	})
+	created, err := preflightAndCreateEntry(t, application, identity, binding, draft)
 	if err != nil || created.EntryID == "" {
 		t.Fatalf("CreateEntry = %+v, %v", created, err)
 	}

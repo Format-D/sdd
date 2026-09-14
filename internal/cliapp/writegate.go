@@ -1,10 +1,9 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/urfave/cli/v3"
 
@@ -41,14 +40,14 @@ func withWriteGate(action cli.ActionFunc) cli.ActionFunc {
 		}
 		res, err := f.SchemaStatus(ctx, query.SchemaStatusQuery{
 			SDDDir:              sddDir,
-			BinaryVersion:       version,
+			BinaryVersion:       cmd.Root().Version,
 			BinarySchemaVersion: model.CurrentGraphSchemaVersion,
 		})
 		if err != nil {
 			return fmt.Errorf("schema check: %w", err)
 		}
 		if !res.Compatibility.Compatible {
-			presenters.RenderSchemaError(os.Stderr, res.Compatibility)
+			presenters.RenderSchemaError(cmd.ErrWriter, res.Compatibility)
 			return errSchemaIncompatible
 		}
 		return action(ctx, cmd)

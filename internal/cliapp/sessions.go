@@ -1,9 +1,9 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 	"time"
 
@@ -28,7 +28,7 @@ func sessionsCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
-			renderSessions(sessions)
+			renderSessions(cmd.Writer, sessions)
 			return nil
 		},
 		Commands: []*cli.Command{sessionsAbandonCmd()},
@@ -57,23 +57,23 @@ func sessionsAbandonCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stdout, "Abandoned %s", result.Session)
+			fmt.Fprintf(cmd.Writer, "Abandoned %s", result.Session)
 			if result.Label != "" {
-				fmt.Fprintf(os.Stdout, " %q", result.Label)
+				fmt.Fprintf(cmd.Writer, " %q", result.Label)
 			}
-			fmt.Fprintln(os.Stdout)
+			fmt.Fprintln(cmd.Writer)
 			for _, instance := range result.Discarded {
-				fmt.Fprintf(os.Stdout, "  discarded: %s at %s\n", instance.Procedure, instance.Step)
+				fmt.Fprintf(cmd.Writer, "  discarded: %s at %s\n", instance.Procedure, instance.Step)
 			}
 			for _, marker := range result.HeldMarkers {
-				fmt.Fprintf(os.Stdout, "  WIP marker left standing: %s\n", marker)
+				fmt.Fprintf(cmd.Writer, "  WIP marker left standing: %s\n", marker)
 			}
 			return nil
 		}),
 	}
 }
 
-func renderSessions(sessions []sdd.WorkflowSessionSummary) {
+func renderSessions(writer io.Writer, sessions []sdd.WorkflowSessionSummary) {
 	shown := 0
 	for _, session := range sessions {
 		if len(session.Open) == 0 {
@@ -91,15 +91,15 @@ func renderSessions(sessions []sdd.WorkflowSessionSummary) {
 		if session.Branch != "" {
 			line += " · branch " + session.Branch
 		}
-		fmt.Fprintln(os.Stdout, line)
+		fmt.Fprintln(writer, line)
 		if session.Label != "" {
-			fmt.Fprintf(os.Stdout, "  %s\n", session.Label)
+			fmt.Fprintf(writer, "  %s\n", session.Label)
 		}
 		for _, instance := range session.Open {
-			fmt.Fprintf(os.Stdout, "  - %s: %s at %s\n", instance.Instance, instance.Procedure, instance.Step)
+			fmt.Fprintf(writer, "  - %s: %s at %s\n", instance.Instance, instance.Procedure, instance.Step)
 		}
 	}
 	if shown == 0 {
-		fmt.Fprintln(os.Stdout, "No sessions with open work.")
+		fmt.Fprintln(writer, "No sessions with open work.")
 	}
 }
