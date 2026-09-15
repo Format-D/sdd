@@ -1,58 +1,72 @@
 package local_test
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/networkteam/sdd/internal/model"
 	sdd "github.com/networkteam/sdd/pkg/application"
+	pkgllm "github.com/networkteam/sdd/pkg/llm"
 	"github.com/networkteam/sdd/pkg/local"
 )
 
-func TestRepositoryTargetFinalizesPublishedCapture(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		legacy bool
-	}{
-		{name: "new publication"},
-		{name: "legacy publication", legacy: true},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := newGitRepository(t)
-			repo.write(".sdd/config.yaml", "repo_id: example\ngraph_dir: .sdd/graph\ndefault_branch: main\n")
-			key := sdd.PublicationKey{Session: "session", Sequence: 4, Discriminator: "new-entry"}
-			const entryID = "20260914-020000-s-tac-cap"
-			batch := captureBatch(t, key, entryID, "Local capture is committed once.")
-			if tt.legacy {
-				change := batch.Changes[0]
-				entryPath := ".sdd/graph/" + change.LogicalPath
-				repo.write(entryPath, string(change.CanonicalBytes))
-				repo.git("add", "--", entryPath)
-				repo.git("commit", "-m", "sdd: previous capture\n\nSDD-Mutation: session/4/new-entry", "--", entryPath)
-			}
+// TestRepositoryTargetPublishesCaptureThroughOneCommit drives CreateEntry over
+// the production local wiring: worktree files without a commit are a failure,
+// the retry after a failed commit keeps the first rendered document, and a
+// retry of a finished publication returns it without another commit.
+func TestRepositoryTargetPublishesCaptureThroughOneCommit(t *testing.T) {
+	repo := newGitRepository(t)
+	repo.write(".sdd/config.yaml", "repo_id: example\ngraph_dir: .sdd/graph\ndefault_branch: main\n")
+	repo.write("global-config.yaml", "")
+	summaries := 0
+	application, identity, binding := repo.captureApplication(t, pkgllm.RunnerFunc(func(context.Context, pkgllm.Request) (pkgllm.Result, error) {
+		summaries++
+		return pkgllm.Result{Text: fmt.Sprintf("Rendered summary %d.", summaries)}, nil
+	}))
+	const entryID = "20260914-020000-s-tac-cap"
+	draft := sdd.EntryDraft{
+		Kind: "gap", Layer: "tactical", Confidence: "high", Body: "Local capture is committed once.",
+		EntryID: entryID, Publication: sdd.PublicationKey{Session: binding.SessionID, Sequence: 1, Discriminator: "new-entry"},
+	}
 
-			first, found, err := repo.completeCapture(key, entryID, batch)
-			if err != nil || found != tt.legacy {
-				t.Fatalf("first attempt: found=%v, err=%v", found, err)
-			}
-			retried, found, err := repo.completeCapture(key, entryID, batch)
-			if err != nil || !found || retried.Revision != first.Revision {
-				t.Fatalf("reacquired retry = %+v, found=%v, err=%v", retried, found, err)
-			}
-			if tt.legacy {
-				otherIntent := key
-				otherIntent.Sequence++
-				batch.ID = otherIntent.String()
-				if _, _, err := repo.completeCapture(key, entryID, batch); err == nil {
-					t.Fatal("legacy publication satisfied a different intent's finalizer")
-				}
-			}
-			if repo.git("rev-parse", "HEAD") != first.Revision {
-				t.Fatal("finalization did not retain the original publication commit")
-			}
-			if count := repo.git("rev-list", "--count", "HEAD"); count != "2" {
-				t.Fatalf("commit count = %s; want seed and publication only", count)
-			}
-		})
+	allowCommits := repo.failCommits()
+	if _, err := application.CreateEntry(t.Context(), identity, "example", binding, draft); err == nil {
+		t.Fatal("worktree files without a commit reported success")
+	}
+	if count := repo.git("rev-list", "--count", "HEAD"); count != "1" {
+		t.Fatalf("failed commit left %s commits", count)
+	}
+	allowCommits()
+	created, err := application.CreateEntry(t.Context(), identity, "example", binding, draft)
+	if err != nil || created.EntryID != entryID || created.Summary != "Rendered summary 1." {
+		t.Fatalf("capture after failed commit = %+v, %v", created, err)
+	}
+	published := repo.git("rev-parse", "HEAD")
+	message := repo.git("log", "-1", "--format=%B")
+	if !strings.Contains(message, "SDD-Mutation: "+draft.Publication.String()) || strings.Contains(message, string(binding.SessionID)) {
+		t.Fatalf("publication commit = %q; want the opaque publication ID without the session handle", message)
+	}
+	relPath, err := model.IDToRelPath(entryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed := repo.git("show", published+":.sdd/graph/"+relPath); !strings.Contains(committed, "Rendered summary 1.") {
+		t.Fatalf("committed entry = %q", committed)
+	}
+
+	retried, err := application.CreateEntry(t.Context(), identity, "example", binding, draft)
+	if err != nil || retried.EntryID != entryID || retried.Summary != created.Summary {
+		t.Fatalf("retry of a finished publication = %+v, %v", retried, err)
+	}
+	if repo.git("rev-parse", "HEAD") != published || repo.git("rev-list", "--count", "HEAD") != "2" {
+		t.Fatal("retry did not reuse the publication commit")
+	}
+	if summaries != 2 {
+		t.Fatalf("summaries = %d; want one per attempt without a publication, none once it exists", summaries)
 	}
 }
 
@@ -104,36 +118,63 @@ func (r *gitRepository) targets(project sdd.ProjectID) *local.GitWorktreeAcquire
 	return targets
 }
 
-func (r *gitRepository) completeCapture(key sdd.PublicationKey, entryID string, batch sdd.MutationBatch) (sdd.EntryPublication, bool, error) {
-	r.t.Helper()
-	acquired, err := r.targets("example").Acquire(r.t.Context(), sdd.MutationTarget{Project: "example", Branch: "main"})
+// captureApplication composes the application the way the CLI does for a
+// local checkout: filesystem reads, Git-backed mutation targets, one session.
+func (r *gitRepository) captureApplication(t *testing.T, runner pkgllm.Runner) (*sdd.Application, sdd.RequestIdentity, sdd.SessionBinding) {
+	t.Helper()
+	graph, err := local.NewFilesystemGraphStore(local.FilesystemGraphStoreOptions{Project: "example", GraphDir: filepath.Join(r.root, ".sdd", "graph")})
 	if err != nil {
-		r.t.Fatal(err)
+		t.Fatal(err)
 	}
-	defer func() {
-		if err := acquired.Release(); err != nil {
-			r.t.Error(err)
-		}
-	}()
-	publisher, ok := acquired.Graph.(sdd.EntryPublicationStore)
-	if !ok || len(acquired.Finalizers) != 1 {
-		r.t.Fatal("local target must supply entry publication and its Git finalizer")
-	}
-	publication, found, err := publisher.LookupEntryPublication(r.t.Context(), key, entryID)
+	targets := r.targets("example")
+	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
+		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main",
+		Graph: graph, Targets: targets, Branches: targets, LLM: runner,
+	})
 	if err != nil {
-		return publication, found, err
+		t.Fatal(err)
 	}
-	if !found {
-		publication, err = publisher.PublishEntry(r.t.Context(), key, batch, nil)
-		if err != nil {
-			return publication, found, err
-		}
+	sessions, err := local.NewFilesystemSessionStoreAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	mutation := sdd.AppliedMutation{Project: "example", BatchID: batch.ID, Revision: publication.Revision, Batch: batch}
-	for _, finalizer := range acquired.Finalizers {
-		if err := finalizer.Finalize(r.t.Context(), mutation); err != nil {
-			return publication, found, err
-		}
+	blobs, err := local.NewFilesystemStagedBlobStoreAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	return publication, found, nil
+	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: runtimeAccess{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := sdd.RequestIdentity{Subject: "christopher"}
+	const session sdd.SessionID = "s_local-handle"
+	created, err := sessions.Create(t.Context(), sdd.SessionMetadata{
+		ID: session, Subject: identity.Subject, Project: "example", Participant: "Christopher",
+		Attachment: &sdd.Attachment{Subject: identity.Subject, ClientName: "test", LastActivity: time.Now().UTC().Round(0)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return application, identity, sdd.SessionBinding{SessionID: session, Subject: identity.Subject, Project: "example", Version: created.Version}
+}
+
+type runtimeAccess struct{ runtime *sdd.ProjectRuntime }
+
+func (runtimeAccess) ResolvePrincipal(_ context.Context, identity sdd.RequestIdentity) (sdd.Principal, error) {
+	return sdd.Principal{Subject: identity.Subject}, nil
+}
+func (runtimeAccess) ResolveParticipant(context.Context, sdd.Principal, sdd.ProjectID) (string, error) {
+	return "Christopher", nil
+}
+func (runtimeAccess) ListProjects(context.Context, sdd.Principal) (sdd.ProjectList, error) {
+	return sdd.ProjectList{Projects: []sdd.ProjectSummary{{ProjectRef: sdd.ProjectRef{ID: "example"}, CanRead: true, CanWrite: true, State: sdd.ProjectReady}}}, nil
+}
+func (a runtimeAccess) ResolveProject(context.Context, sdd.Principal, sdd.ProjectID, sdd.Access) (*sdd.ProjectRuntime, error) {
+	return a.runtime, nil
+}
+func (runtimeAccess) ResolveDependency(_ context.Context, _ sdd.Principal, _ sdd.ProjectID, dependency string) (*sdd.ProjectRuntime, error) {
+	return nil, fmt.Errorf("no dependency %s", dependency)
+}
+func (runtimeAccess) AuthorizeSession(ctx context.Context, request sdd.SessionAccessRequest) error {
+	return sdd.OwnerOnly(ctx, request)
 }

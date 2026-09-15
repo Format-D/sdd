@@ -36,21 +36,19 @@ func (s *FilesystemGraphStore) lookupEntryPublicationLocked(ctx context.Context,
 	if err != nil {
 		return app.EntryPublication{}, false, err
 	}
-	if s.publicationGit != nil {
-		revision, err := s.publicationGit.lookupTrailer(ctx, "SDD-Publication: "+key.String())
-		if err == nil && revision == "" {
-			legacy := fmt.Sprintf("SDD-Mutation: %s/%d/%s", key.Session, key.Sequence, key.Discriminator)
-			revision, err = s.publicationGit.lookupTrailer(ctx, legacy)
-		}
-		if err != nil || revision == "" {
-			return app.EntryPublication{}, false, err
-		}
-		publication, err := s.readCommittedEntry(ctx, revision, logicalPath)
-		return publication, err == nil, err
+	if s.publicationGit == nil {
+		return s.readExistingEntry(ctx, logicalPath)
 	}
-	return s.readExistingEntry(ctx, logicalPath)
+	revision, err := s.publicationGit.lookupTrailer(ctx, mutationTrailer(key.String()))
+	if err != nil || revision == "" {
+		return app.EntryPublication{}, false, err
+	}
+	publication, err := s.readCommittedEntry(ctx, revision, logicalPath)
+	return publication, err == nil, err
 }
 
+// PublishEntry writes the entry and its attachments once; a Git-backed target
+// counts the publication as existing only after its finalizer committed it.
 func (s *FilesystemGraphStore) PublishEntry(ctx context.Context, key app.PublicationKey, batch app.MutationBatch, blobs app.StagedBlobReader) (_ app.EntryPublication, err error) {
 	if err := key.Validate(); err != nil {
 		return app.EntryPublication{}, err
@@ -111,26 +109,7 @@ func (s *FilesystemGraphStore) PublishEntry(ctx context.Context, key app.Publica
 			return app.EntryPublication{}, err
 		}
 	}
-	if s.publicationGit == nil {
-		return publication, nil
-	}
-	actual := app.MutationBatch{ID: key.String(), Message: batch.Message, Changes: []app.DocumentChange{{LogicalPath: publication.Document.LogicalPath, Document: &publication.Document}}}
-	attachmentDir, err := model.AttachDirRelPath(entryID)
-	if err != nil {
-		return app.EntryPublication{}, err
-	}
-	for _, filename := range publication.Document.Attachments {
-		actual.Attachments = append(actual.Attachments, app.AttachmentMaterialization{SourceName: filename, LogicalPath: path.Join(attachmentDir, filename)})
-	}
-	trailer := "SDD-Publication: " + key.String()
-	if err := s.publicationGit.finalizeLocked(ctx, app.AppliedMutation{Project: s.project, BatchID: key.String(), Batch: actual}, trailer); err != nil {
-		return app.EntryPublication{}, err
-	}
-	revision, err := s.publicationGit.lookupTrailer(ctx, trailer)
-	if err != nil {
-		return app.EntryPublication{}, err
-	}
-	return s.readCommittedEntry(ctx, revision, change.LogicalPath)
+	return publication, nil
 }
 
 func (s *FilesystemGraphStore) readExistingEntry(ctx context.Context, logicalPath string) (_ app.EntryPublication, _ bool, err error) {

@@ -19,7 +19,21 @@ func NewRepositoryTargets(project app.ProjectID, serverCheckout, globalConfigPat
 		if err != nil {
 			return nil, err
 		}
-		return meta.ResolveConfig(global.BaseConfig, filepath.Join(checkout, model.SDDDirName))
+		cfg, err := meta.ResolveConfig(global.BaseConfig, filepath.Join(checkout, model.SDDDirName))
+		if err != nil {
+			return nil, err
+		}
+		if cfg == nil {
+			return nil, fmt.Errorf("checkout %q has no SDD configuration", checkout)
+		}
+		id := app.ProjectID(cfg.RepoID)
+		if id == "" {
+			id = "local"
+		}
+		if id != project {
+			return nil, fmt.Errorf("checkout %q does not contain project %s", checkout, project)
+		}
+		return cfg, nil
 	}
 	return NewGitWorktreeAcquirer(GitWorktreeAcquirerOptions{
 		Project: project, ServerCheckout: serverCheckout,
@@ -27,16 +41,6 @@ func NewRepositoryTargets(project app.ProjectID, serverCheckout, globalConfigPat
 			cfg, err := resolveConfig(checkout)
 			if err != nil {
 				return nil, err
-			}
-			if cfg == nil {
-				return nil, fmt.Errorf("read checkout %q has no SDD configuration", checkout)
-			}
-			id := app.ProjectID(cfg.RepoID)
-			if id == "" {
-				id = "local"
-			}
-			if id != project {
-				return nil, fmt.Errorf("read checkout %q does not contain project %s", checkout, project)
 			}
 			graph, err := NewFilesystemGraphStore(FilesystemGraphStoreOptions{
 				Project: project, GraphDir: meta.ResolveGraphDir(checkout, cfg), Branch: q.Branch,
@@ -49,17 +53,7 @@ func NewRepositoryTargets(project app.ProjectID, serverCheckout, globalConfigPat
 		Factory: func(_ context.Context, checkout string, target app.MutationTarget) (app.GraphStore, []app.MutationFinalizer, func() error, error) {
 			cfg, err := resolveConfig(checkout)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("loading mutation target config for %s: %w", target.Branch, err)
-			}
-			if cfg == nil {
-				return nil, nil, nil, fmt.Errorf("mutation target checkout %q does not contain project %s", checkout, project)
-			}
-			id := app.ProjectID(cfg.RepoID)
-			if id == "" {
-				id = "local"
-			}
-			if id != project {
-				return nil, nil, nil, fmt.Errorf("mutation target checkout %q does not contain project %s", checkout, project)
+				return nil, nil, nil, fmt.Errorf("mutation target %s: %w", target.Branch, err)
 			}
 			graphDir := cfg.GraphDir
 			if graphDir == "" {

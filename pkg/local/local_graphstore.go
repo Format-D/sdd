@@ -25,8 +25,9 @@ type FilesystemGraphStoreOptions struct {
 	GraphDir string
 	// Branch is the authority assigned by the target acquirer, if branch-scoped.
 	Branch string
-	// PublicationGit makes a Git commit part of capture publication's success.
-	// Without it, publication acknowledges filesystem state and recognizes retries by entry ID only.
+	// PublicationGit identifies a committed publication by the trailer its
+	// finalizer wrote; the finalizer, not the store, commits. Without it,
+	// publication recognizes retries by entry ID only.
 	PublicationGit *GitFinalizer
 }
 
@@ -434,8 +435,16 @@ func (s *FilesystemGraphStore) ReadAttachmentPage(_ context.Context, entryID, fi
 	return attachmentPageWithLocalPath(page, s.dir, entryID)
 }
 
-func (s *FilesystemGraphStore) lock() (*flock.Flock, error) {
-	lock := flock.New(filepath.Join(s.dir, ".sdd-runtime", "graph.lock"))
+func (s *FilesystemGraphStore) lock() (*flock.Flock, error) { return lockGraph(s.dir) }
+
+// lockGraph serializes every writer of one graph directory, the store and the
+// Git finalizer alike.
+func lockGraph(dir string) (*flock.Flock, error) {
+	runtimeDir := filepath.Join(dir, ".sdd-runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		return nil, err
+	}
+	lock := flock.New(filepath.Join(runtimeDir, "graph.lock"))
 	if err := lock.Lock(); err != nil {
 		return nil, err
 	}

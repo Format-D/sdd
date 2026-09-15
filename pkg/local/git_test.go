@@ -49,10 +49,14 @@ func (r *gitRepository) write(name, content string) {
 	}
 }
 
+func (r *gitRepository) finalizer() local.GitFinalizer {
+	return local.GitFinalizer{Checkout: r.root, GraphDir: ".sdd/graph", Branch: "main"}
+}
+
 func (r *gitRepository) graphStore() *local.FilesystemGraphStore {
 	r.t.Helper()
-	git := &local.GitFinalizer{Checkout: r.root, GraphDir: ".sdd/graph", Branch: "main"}
-	store, err := local.NewFilesystemGraphStore(local.FilesystemGraphStoreOptions{Project: "example", GraphDir: filepath.Join(r.root, ".sdd", "graph"), Branch: "main", PublicationGit: git})
+	git := r.finalizer()
+	store, err := local.NewFilesystemGraphStore(local.FilesystemGraphStoreOptions{Project: "example", GraphDir: filepath.Join(r.root, ".sdd", "graph"), Branch: "main", PublicationGit: &git})
 	if err != nil {
 		r.t.Fatal(err)
 	}
