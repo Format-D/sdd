@@ -7,24 +7,12 @@ import (
 	"testing"
 )
 
-func TestSuppliedStreamsWithoutTerminalDescriptors(t *testing.T) {
-	for name, stream := range map[string]any{
-		"nil":      nil,
-		"nil file": (*os.File)(nil),
-		"reader":   strings.NewReader("input"),
-		"writer":   &bytes.Buffer{},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if IsTerminal(stream) || IsInteractive(stream) {
-				t.Fatal("a stream without a terminal descriptor must use plain output")
-			}
-		})
+func TestStreamsWithoutTerminalDescriptorsAreNotTerminals(t *testing.T) {
+	if IsTerminalReader(nil) || IsTerminalReader(strings.NewReader("input")) || IsTerminalReader((*os.File)(nil)) {
+		t.Fatal("a reader without a terminal descriptor must use plain input")
 	}
-}
-
-func TestIsInteractive_NilFile(t *testing.T) {
-	if IsInteractive(nil) {
-		t.Error("nil file must not be interactive")
+	if IsTerminalWriter(nil) || IsTerminalWriter(&bytes.Buffer{}) || IsInteractive(&bytes.Buffer{}) || IsInteractive(nil) {
+		t.Fatal("a writer without a terminal descriptor must use plain output")
 	}
 }
 
@@ -40,8 +28,8 @@ func TestIsInteractive_Pipe(t *testing.T) {
 	if IsInteractive(wr) {
 		t.Error("pipe write end must not be interactive")
 	}
-	if IsInteractive(rd) {
-		t.Error("pipe read end must not be interactive")
+	if IsTerminalReader(rd) {
+		t.Error("pipe read end must not be a terminal")
 	}
 }
 

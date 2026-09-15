@@ -7,6 +7,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/networkteam/sdd/internal/cliout"
 	"github.com/networkteam/sdd/internal/command"
 	"github.com/networkteam/sdd/internal/finders"
 	"github.com/networkteam/sdd/internal/handlers"
@@ -77,7 +78,7 @@ that version has stopped.`,
 				}
 				// Same split as sdd stats: agents and pipes get JSON, a
 				// terminal gets the styled table (d-cpt-owo).
-				if cmd.String("format") == "json" || !isTerminal(cmd.Writer) {
+				if cmd.String("format") == "json" || !cliout.IsTerminalWriter(cmd.Writer) {
 					return presenters.RenderIndexVersionsJSON(cmd.Writer, results)
 				}
 				presenters.RenderIndexVersionsTable(cmd.Writer, results)

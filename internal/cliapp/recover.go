@@ -11,6 +11,7 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/networkteam/sdd/internal/cliout"
 	"github.com/networkteam/sdd/internal/repos"
 	sdd "github.com/networkteam/sdd/pkg/application"
 	pkgllm "github.com/networkteam/sdd/pkg/llm"
@@ -68,7 +69,7 @@ func recoverCmd() *cli.Command {
 			if verb == sdd.RecoveryBindTarget {
 				branch := strings.TrimSpace(cmd.String("branch"))
 				if branch == "" {
-					if !isTerminal(cmd.Reader) {
+					if !cliout.IsTerminalReader(cmd.Reader) {
 						return fmt.Errorf("bind-target requires --branch in non-interactive mode")
 					}
 					branch, err = readRecoveryLine(cmd.Reader, cmd.Writer, "Concrete target branch: ")
@@ -79,14 +80,14 @@ func recoverCmd() *cli.Command {
 				target = sdd.MutationTarget{Project: project, Branch: branch}
 			}
 			reason := strings.TrimSpace(cmd.String("reason"))
-			if reason == "" && isTerminal(cmd.Reader) {
+			if reason == "" && cliout.IsTerminalReader(cmd.Reader) {
 				reason, err = readRecoveryLine(cmd.Reader, cmd.Writer, "Audit reason: ")
 				if err != nil {
 					return err
 				}
 			}
 			if !cmd.Bool("yes") {
-				if !isTerminal(cmd.Reader) {
+				if !cliout.IsTerminalReader(cmd.Reader) {
 					return fmt.Errorf("recovery requires explicit confirmation; pass --yes with --session, --mutation, and --verb")
 				}
 				confirmed, err := promptConfirmation(cmd, fmt.Sprintf("Run %s for %s on %s?", verb, item.MutationID, recoveryTargetLabel(item)))
@@ -221,7 +222,7 @@ func selectRecoveryItem(items []sdd.RecoveryItem, cmd *cli.Command) (sdd.Recover
 		}
 		return sdd.RecoveryItem{}, fmt.Errorf("pending mutation %s in session %s was not found", mutation, session)
 	}
-	if !isTerminal(cmd.Reader) {
+	if !cliout.IsTerminalReader(cmd.Reader) {
 		return sdd.RecoveryItem{}, fmt.Errorf("multiple pending writes require --session and --mutation in non-interactive mode")
 	}
 	renderRecoveryItems(cmd.Writer, items)
@@ -236,7 +237,7 @@ func selectRecoveryVerb(item sdd.RecoveryItem, cmd *cli.Command) (sdd.RecoveryVe
 	if raw := strings.TrimSpace(cmd.String("verb")); raw != "" {
 		return parseRecoveryVerb(raw)
 	}
-	if !isTerminal(cmd.Reader) {
+	if !cliout.IsTerminalReader(cmd.Reader) {
 		return "", fmt.Errorf("--verb is required in non-interactive mode")
 	}
 	verbs := recoveryVerbs(item)

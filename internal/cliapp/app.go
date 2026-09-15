@@ -502,7 +502,7 @@ func statsCmd() *cli.Command {
 			// Non-TTY consumers (and an explicit --format json) get clean
 			// structured stdout; interactive terminals get the styled table
 			// (per d-cpt-mvb / d-cpt-5f4).
-			if cmd.String("format") == "json" || !isTerminal(cmd.Writer) {
+			if cmd.String("format") == "json" || !cliout.IsTerminalWriter(cmd.Writer) {
 				return presenters.RenderStatsJSON(cmd.Writer, result)
 			}
 			presenters.RenderStatsTable(cmd.Writer, result)
@@ -570,7 +570,7 @@ func showCmd() *cli.Command {
 			// Renderer selection: an explicit --format text, NO_COLOR, or a
 			// non-terminal stdout all take the plain markdown renderer; an
 			// interactive terminal gets the styled view (d-cpt-5f4 / d-cpt-mvb).
-			if cmd.String("format") == "text" || os.Getenv("NO_COLOR") != "" || !isTerminal(cmd.Writer) {
+			if cmd.String("format") == "text" || os.Getenv("NO_COLOR") != "" || !cliout.IsTerminalWriter(cmd.Writer) {
 				presenters.RenderShow(cmd.Writer, result, opts)
 				return nil
 			}
@@ -1356,11 +1356,6 @@ func readRecordedSkillScope(sddDir string) model.Scope {
 	return cfg.SkillScope
 }
 
-// isTerminal recognizes terminal-backed command streams.
-func isTerminal(stream any) bool {
-	return cliout.IsTerminal(stream)
-}
-
 // promptOverwriteModified asks the user whether to overwrite a user-edited
 // skill file during sdd init. Default N (preserve). Returns false on empty
 // input, EOF, or cancellation — the safe side is always "leave it alone."
@@ -1471,7 +1466,7 @@ func initCmd() *cli.Command {
 			// rather than failing the run on the first one. Runs only
 			// when stdin is not a TTY — interactive callers fall through
 			// to the per-piece prompts below.
-			if !isTerminal(cmd.Reader) {
+			if !cliout.IsTerminalReader(cmd.Reader) {
 				var missing []string
 				if !sddExists && languageFlag == "" {
 					missing = append(missing, "--language LOCALE   (e.g. --language en — graph authoring language)")
@@ -1491,7 +1486,7 @@ func initCmd() *cli.Command {
 			}
 
 			graphDir := cmd.String("graph-dir")
-			if graphDir == "" && !sddExists && isTerminal(cmd.Reader) {
+			if graphDir == "" && !sddExists && cliout.IsTerminalReader(cmd.Reader) {
 				prompted, err := promptGraphDir(cmd, model.DefaultGraphDir)
 				if err != nil {
 					return fmt.Errorf("prompt: %w", err)
@@ -1507,7 +1502,7 @@ func initCmd() *cli.Command {
 			// `en` (English); choosing it still writes the key so future
 			// readers of the file don't have to infer default vs. unset.
 			language := languageFlag
-			if language == "" && !sddExists && isTerminal(cmd.Reader) {
+			if language == "" && !sddExists && cliout.IsTerminalReader(cmd.Reader) {
 				prompted, err := promptLanguage(cmd, "en")
 				if err != nil {
 					return fmt.Errorf("prompt: %w", err)
@@ -1537,7 +1532,7 @@ func initCmd() *cli.Command {
 			// participant. Non-interactive runs are caught by the
 			// aggregated error above; here we only prompt on a TTY.
 			participant := participantFlag
-			if participant == "" && recordedParticipant == "" && isTerminal(cmd.Reader) {
+			if participant == "" && recordedParticipant == "" && cliout.IsTerminalReader(cmd.Reader) {
 				def := git.UserName()
 				prompted, err := promptParticipant(cmd, def)
 				if err != nil {
@@ -1559,7 +1554,7 @@ func initCmd() *cli.Command {
 					}
 					targets = append(targets, t)
 				}
-			} else if !sddExists && isTerminal(cmd.Reader) {
+			} else if !sddExists && cliout.IsTerminalReader(cmd.Reader) {
 				chosen, err := promptAgents(cmd)
 				if err != nil {
 					return fmt.Errorf("prompt: %w", err)
@@ -1597,7 +1592,7 @@ func initCmd() *cli.Command {
 					fmt.Fprintf(cmd.Writer, "  minimum_version: %s (unchanged)\n", current)
 				},
 				PromptOverwrite: func(path string) (bool, error) {
-					if !isTerminal(cmd.Reader) {
+					if !cliout.IsTerminalReader(cmd.Reader) {
 						return false, nil
 					}
 					return promptOverwriteModified(cmd, path)
