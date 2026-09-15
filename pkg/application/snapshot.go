@@ -94,6 +94,11 @@ func AttachmentDirRelPath(entryID string) (string, error) {
 	return model.AttachDirRelPath(entryID)
 }
 
+// EntryRelPath returns the graph-relative document path for an entry ID.
+func EntryRelPath(entryID string) (string, error) {
+	return model.IDToRelPath(entryID)
+}
+
 // BuildSnapshot is the single in-memory graph construction path. It adapts the
 // canonical documents into a storage-neutral source and hands them to the
 // shared GraphFinder, which applies the one semantic gate (parse, embedded-base
