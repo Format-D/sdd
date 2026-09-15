@@ -1,9 +1,9 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 
 	"github.com/urfave/cli/v3"
@@ -35,7 +35,7 @@ func repoCmd() *cli.Command {
 					if cmd.Args().Len() != 1 {
 						return fmt.Errorf("usage: sdd repo add <clone-url>")
 					}
-					h, err := repoHandler()
+					h, err := repoHandler(cmd.ErrWriter)
 					if err != nil {
 						return err
 					}
@@ -68,9 +68,9 @@ func repoCmd() *cli.Command {
 					// program, no escape leak) while a real clone gets the inline
 					// spinner, phase label, and streamed "cloning" log. Off-TTY it
 					// stays at the plain slog floor.
-					if cliout.IsInteractive(os.Stderr) {
+					if cliout.IsInteractive(cmd.ErrWriter) {
 						_, err = clitui.Interactive(ctx, transientViewPolicy(),
-							clitui.View{InitialPhase: model.PhaseConnecting, Progress: reporter, StreamLogs: true}, work)
+							clitui.View{Reader: cmd.Reader, Writer: cmd.ErrWriter, InitialPhase: model.PhaseConnecting, Progress: reporter, StreamLogs: true}, work)
 					} else {
 						_, err = work(ctx)
 					}
@@ -79,16 +79,16 @@ func repoCmd() *cli.Command {
 					}
 
 					if haveAdded {
-						presenters.RenderResultLine(os.Stdout,
+						presenters.RenderResultLine(cmd.Writer,
 							fmt.Sprintf("connected %s", addedRepoID),
 							fmt.Sprintf("cache: %s", addedCacheDir))
 					}
 					if haveDeclared {
 						if alreadyDeclared {
-							presenters.RenderResultLine(os.Stdout,
+							presenters.RenderResultLine(cmd.Writer,
 								fmt.Sprintf("dependency %s already declared in .sdd/config.yaml", declaredRepoID), "")
 						} else {
-							presenters.RenderResultLine(os.Stdout,
+							presenters.RenderResultLine(cmd.Writer,
 								fmt.Sprintf("declared dependency %s in .sdd/config.yaml", declaredRepoID),
 								"committed so clones know what to connect")
 						}
@@ -109,7 +109,7 @@ func repoCmd() *cli.Command {
 						return err
 					}
 					if len(cfg.Repos) == 0 {
-						fmt.Println("no connected repos — add one with `sdd repo add <clone-url>`")
+						fmt.Fprintln(cmd.Writer, "no connected repos — add one with `sdd repo add <clone-url>`")
 						return nil
 					}
 					for _, r := range cfg.Repos {
@@ -117,7 +117,7 @@ func repoCmd() *cli.Command {
 						if dir, err := reg.CacheDir(r.RepoID); err == nil && repos.IsCloned(dir) {
 							status = "cached"
 						}
-						fmt.Printf("%s\n  clone_url: %s (%s)\n", r.RepoID, r.CloneURL, status)
+						fmt.Fprintf(cmd.Writer, "%s\n  clone_url: %s (%s)\n", r.RepoID, r.CloneURL, status)
 					}
 					return nil
 				},
@@ -136,7 +136,7 @@ func repoCmd() *cli.Command {
 					if cmd.Args().Len() != 1 {
 						return fmt.Errorf("usage: sdd repo remove <repo-id>")
 					}
-					h, err := repoHandler()
+					h, err := repoHandler(cmd.ErrWriter)
 					if err != nil {
 						return err
 					}
@@ -144,12 +144,12 @@ func repoCmd() *cli.Command {
 						RepoID: cmd.Args().First(),
 						Force:  cmd.Bool("force"),
 						OnRemoved: func(repoID string) {
-							fmt.Printf("removed dependency %s from .sdd/config.yaml\n", repoID)
+							fmt.Fprintf(cmd.Writer, "removed dependency %s from .sdd/config.yaml\n", repoID)
 						},
 						OnStranded: func(repoID string, stranded []command.StrandedRef) {
-							fmt.Fprintf(os.Stderr, "warning: --force stranded %d ref(s) into %s:\n", len(stranded), repoID)
+							fmt.Fprintf(cmd.ErrWriter, "warning: --force stranded %d ref(s) into %s:\n", len(stranded), repoID)
 							for _, s := range stranded {
-								fmt.Fprintf(os.Stderr, "  %s  %s  %s\n", s.EntryID, s.Kind, s.RefID)
+								fmt.Fprintf(cmd.ErrWriter, "  %s  %s  %s\n", s.EntryID, s.Kind, s.RefID)
 							}
 						},
 					})
@@ -160,14 +160,14 @@ func repoCmd() *cli.Command {
 				Usage:     "Force-pull connected repo caches (all, or the named repos)",
 				ArgsUsage: "[repo-id ...]",
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					h, err := repoHandler()
+					h, err := repoHandler(cmd.ErrWriter)
 					if err != nil {
 						return err
 					}
 					return h.RepoSync(ctx, &command.RepoSyncCmd{
 						RepoIDs: cmd.Args().Slice(),
 						OnSynced: func(repoID string) {
-							fmt.Printf("synced %s\n", repoID)
+							fmt.Fprintf(cmd.Writer, "synced %s\n", repoID)
 						},
 					})
 				},
@@ -179,7 +179,7 @@ func repoCmd() *cli.Command {
 // repoHandler builds the handler for repo commands: a read finder for
 // handler construction plus the connected-repos manager the repo
 // operations run through.
-func repoHandler() (*handlers.Handler, error) {
+func repoHandler(errWriter io.Writer) (*handlers.Handler, error) {
 	reader, err := newReadFinder()
 	if err != nil {
 		return nil, err
@@ -202,6 +202,7 @@ func repoHandler() (*handlers.Handler, error) {
 		graphDir = meta.ResolveGraphDir(filepath.Dir(sddDir), cfg)
 	}
 	return handlers.New(handlers.Options{
+		Stderr:    errWriter,
 		Reader:    reader,
 		Repos:     mgr,
 		SDDDir:    sddDir,
@@ -212,11 +213,11 @@ func repoHandler() (*handlers.Handler, error) {
 
 // freshenRepoCaches brings the named connected repos' caches up to date
 // before a read (lazy clone + cooldown pull). A no-op for an empty list.
-func freshenRepoCaches(ctx context.Context, repoIDs []string) error {
+func freshenRepoCaches(ctx context.Context, errWriter io.Writer, repoIDs []string) error {
 	if len(repoIDs) == 0 {
 		return nil
 	}
-	h, err := repoHandler()
+	h, err := repoHandler(errWriter)
 	if err != nil {
 		return err
 	}

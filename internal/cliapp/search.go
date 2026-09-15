@@ -1,10 +1,9 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -232,6 +231,7 @@ func indexCmd() *cli.Command {
 			}
 
 			h := handlers.NewIndexHandler(handlers.IndexHandlerOptions{
+				Stderr:   cmd.ErrWriter,
 				GraphDir: graphDir,
 				IndexDir: idxDir,
 				Embedder: emb,
@@ -271,7 +271,7 @@ func indexCmd() *cli.Command {
 					return struct{}{}, err
 				}
 				if crossRepo {
-					connH := handlers.New(handlers.Options{Reader: reader, Repos: mgr})
+					connH := handlers.New(handlers.Options{Stderr: cmd.ErrWriter, Reader: reader, Repos: mgr})
 					if err := connH.BuildConnectedIndexes(ctx, repoIDs, emb, fill); err != nil {
 						return struct{}{}, err
 					}
@@ -283,9 +283,9 @@ func indexCmd() *cli.Command {
 			// the footer). On a TTY the coordinator owns whether a program
 			// runs: a warm index does no work and stays dormant/silent; a real
 			// build arms and shows the inline view.
-			if cliout.IsInteractive(os.Stderr) {
+			if cliout.IsInteractive(cmd.ErrWriter) {
 				_, err = clitui.Interactive(ctx, transientViewPolicy(),
-					clitui.View{InitialPhase: model.PhaseIndexing, Progress: prog.reporter, StreamLogs: true}, work)
+					clitui.View{Reader: cmd.Reader, Writer: cmd.ErrWriter, InitialPhase: model.PhaseIndexing, Progress: prog.reporter, StreamLogs: true}, work)
 			} else {
 				_, err = work(ctx)
 			}
@@ -303,7 +303,7 @@ func indexCmd() *cli.Command {
 				if size, err := index.StoreSize(idxDir); err == nil {
 					detail += " · store " + presenters.HumanBytes(size)
 				}
-				presenters.RenderResultLine(os.Stdout,
+				presenters.RenderResultLine(cmd.Writer,
 					fmt.Sprintf("indexed %d entries", doneIndexed), detail)
 			}
 			return nil
@@ -420,6 +420,7 @@ func searchCmd() *cli.Command {
 					return err
 				}
 				ih = handlers.NewIndexHandler(handlers.IndexHandlerOptions{
+					Stderr:   cmd.ErrWriter,
 					GraphDir: graphDir,
 					IndexDir: idxDir,
 					Embedder: emb,
@@ -481,7 +482,7 @@ func searchCmd() *cli.Command {
 			// results render. Indexing is transient for search, so its per-entry
 			// log lines are not streamed. Off-TTY (and for agents) the plain
 			// path stays quiet at the Warn floor.
-			showView := cliout.IsInteractive(os.Stderr)
+			showView := cliout.IsInteractive(cmd.ErrWriter)
 			var prog *embedProgress
 			if showView {
 				prog = newEmbedProgress()
@@ -522,7 +523,7 @@ func searchCmd() *cli.Command {
 					if err != nil {
 						return nil, err
 					}
-					h := handlers.New(handlers.Options{Reader: reader, Repos: mgr})
+					h := handlers.New(handlers.Options{Stderr: cmd.ErrWriter, Reader: reader, Repos: mgr})
 					var fill *command.BuildConnectedIndexesCmd
 					if prog != nil {
 						fill = prog.connected(false)
@@ -540,14 +541,14 @@ func searchCmd() *cli.Command {
 				// Vector search: the footer tracks the fill (embedding) — the
 				// work taking time; the bar appears once a chunk total is known
 				// and the phase label reads "indexing".
-				view := clitui.View{InitialPhase: model.PhaseIndexing, Progress: prog.reporter, StreamLogs: false}
+				view := clitui.View{Reader: cmd.Reader, Writer: cmd.ErrWriter, InitialPhase: model.PhaseIndexing, Progress: prog.reporter, StreamLogs: false}
 				if !needsVector {
 					// Text-only cross-repo does no embedding — the work is
 					// freshening connected caches. The freshen step reports
 					// connecting/syncing, so the label stays phase-true (never
 					// "indexing"); no chunk bar (no total), and the "cloning
 					// connected repo" log streams rather than hiding the wait.
-					view = clitui.View{InitialPhase: model.PhaseConnecting, Progress: prog.reporter, StreamLogs: true}
+					view = clitui.View{Reader: cmd.Reader, Writer: cmd.ErrWriter, InitialPhase: model.PhaseConnecting, Progress: prog.reporter, StreamLogs: true}
 				}
 				res, err = clitui.Interactive(ctx, transientViewPolicy(), view, work)
 			} else {
@@ -557,7 +558,7 @@ func searchCmd() *cli.Command {
 				return err
 			}
 
-			presenters.RenderSearch(os.Stdout, res, g)
+			presenters.RenderSearch(cmd.Writer, res, g)
 			return nil
 		},
 	}

@@ -2,6 +2,7 @@ package application_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -223,7 +224,7 @@ func TestStaleWorkflowEventsAreNotResubmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata := stored.Metadata
-	if _, err := sessions.Append(t.Context(), w.ID(), stored.Version, sdd.SessionAppend{Metadata: &metadata}); err != nil {
+	if _, err := sessions.Append(t.Context(), w.ID(), stored.Version, sdd.SessionAppend{Metadata: &metadata, Events: []sdd.StoredEvent{{CodecVersion: 1, Code: "session_attached", Payload: json.RawMessage(`{}`)}}}); err != nil {
 		t.Fatal(err)
 	}
 	before := sessions.appends.Load()
@@ -239,7 +240,7 @@ func TestStaleWorkflowEventsAreNotResubmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after.Events) != len(stored.Events) {
+	if len(after.Events) != len(stored.Events)+1 {
 		t.Fatal("rejected events reached the ledger")
 	}
 	w, err = application.RefreshWorkflow(t.Context(), identity, w.ID())

@@ -1,6 +1,7 @@
 package application_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -61,11 +62,12 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 		secondEnd  = "2026-07-20T11:00:00Z"
 	)
 	for _, tc := range []struct {
-		name    string
-		ended   string
-		events  []string
-		wantAct sdd.SessionEndAct
-		wantAt  string
+		name       string
+		ended      string
+		events     []string
+		wantAct    sdd.SessionEndAct
+		wantAt     string
+		wantReason string
 	}{
 		{
 			name: "a completed shell ends the session",
@@ -76,22 +78,27 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 			wantAct: sdd.SessionConcluded, wantAt: firstEnd,
 		},
 		{
-			name: "an abandoned shell ends the session the same way",
+			name: "an abandoned shell ends the session as abandoned, with its reason",
 			events: []string{
 				legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData),
-				legacyEvent("s_legacy", 2, "i_1", "abandoned", firstEnd, ""),
+				legacyEvent("s_legacy", 2, "i_1", "abandoned", firstEnd, `{"reason":"torn down"}`),
 			},
-			wantAct: sdd.SessionConcluded, wantAt: firstEnd,
+			wantAct: sdd.SessionAbandoned, wantAt: firstEnd, wantReason: "torn down",
 		},
 		{
-			name: "a revived shell ends the session when it too is over",
+			name:    "a log without shell events keeps its recorded ending",
+			ended:   `,"Ended":{"Act":"abandoned","EndedAt":"` + secondEnd + `","Reason":"torn down"}`,
+			wantAct: sdd.SessionAbandoned, wantAt: secondEnd, wantReason: "torn down",
+		},
+		{
+			name: "a revived shell ends the session with its own terminal act",
 			events: []string{
 				legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData),
 				legacyEvent("s_legacy", 2, "i_1", "completed", firstEnd, ""),
 				legacyEvent("s_legacy", 3, "i_2", "started", firstEnd, legacyShellData),
 				legacyEvent("s_legacy", 4, "i_2", "abandoned", secondEnd, ""),
 			},
-			wantAct: sdd.SessionConcluded, wantAt: secondEnd,
+			wantAct: sdd.SessionAbandoned, wantAt: secondEnd,
 		},
 		{
 			name: "a running shell keeps the session live however its moves ended",
@@ -102,13 +109,18 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 			},
 		},
 		{
-			name:  "a recorded ending is never overridden",
+			name:   "metadata cannot end a running shell",
+			ended:  `,"Ended":{"Act":"abandoned","EndedAt":"` + secondEnd + `"}`,
+			events: []string{legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData)},
+		},
+		{
+			name:  "a metadata ending cannot override the terminal event",
 			ended: `,"Ended":{"Act":"abandoned","EndedAt":"` + secondEnd + `","Reason":"torn down"}`,
 			events: []string{
 				legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData),
 				legacyEvent("s_legacy", 2, "i_1", "completed", firstEnd, ""),
 			},
-			wantAct: sdd.SessionAbandoned, wantAt: secondEnd,
+			wantAct: sdd.SessionConcluded, wantAt: firstEnd,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -138,6 +150,9 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 			}
 			if got := appErr.Ended.EndedAt.Format(time.RFC3339); got != tc.wantAt {
 				t.Fatalf("Ended.EndedAt = %s, want %s", got, tc.wantAt)
+			}
+			if appErr.Ended.Reason != tc.wantReason {
+				t.Fatalf("Ended.Reason = %q, want %q", appErr.Ended.Reason, tc.wantReason)
 			}
 			if !strings.Contains(err.Error(), "start_session") {
 				t.Fatalf("the refusal must name the new-session path, got %q", err.Error())
@@ -173,5 +188,113 @@ func TestCollectRemovesLegacyShellEndedSessions(t *testing.T) {
 	}
 	if got := f.listedIDs(t); !slices.Equal(got, []string{"s_legacy_open", "s_legacy_recent"}) {
 		t.Fatalf("remaining = %v, want the in-window and still-running sessions", got)
+	}
+}
+
+func TestExplicitEndingEventOverridesMetadata(t *testing.T) {
+	f := newCollectFixture(t)
+	f.writeSession(t, "s_explicit", time.Time{}, "")
+	end := sdd.SessionEnd{Act: sdd.SessionAbandoned, EndedAt: f.now.Add(-time.Hour), Reason: "participant stopped"}
+	payload, err := json.Marshal(end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.sessions.Load(t.Context(), "s_explicit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := stored.Metadata
+	metadata.Ended = &sdd.SessionEnd{Act: sdd.SessionConcluded, EndedAt: f.now.Add(-24 * time.Hour)}
+	_, err = f.sessions.Append(t.Context(), "s_explicit", 0, sdd.SessionAppend{Metadata: &metadata, Events: []sdd.StoredEvent{{CodecVersion: sdd.SessionCodecVersion, Code: sdd.SessionEndedEventCode, Payload: payload}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = f.app.ResumeWorkflow(t.Context(), f.identity, sdd.WorkflowResumeRequest{SessionID: "s_explicit"})
+	var appErr *sdd.ApplicationError
+	if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorSessionEnded || appErr.Ended == nil || *appErr.Ended != end {
+		t.Fatalf("resume error = %+v, want ending %+v", err, end)
+	}
+}
+
+func TestUnreadableEndingCannotBeCollectedOrResumed(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		version uint32
+		payload string
+	}{
+		{name: "null ending", version: sdd.SessionCodecVersion, payload: `null`},
+		{name: "missing timestamp", version: sdd.SessionCodecVersion, payload: `{"Act":"abandoned"}`},
+		{name: "future codec", version: 99, payload: `{"Act":"abandoned","EndedAt":"2026-07-01T00:00:00Z"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newCollectFixture(t)
+			f.writeSession(t, "s_unreadable_end", time.Time{}, "")
+			_, err := f.sessions.Append(t.Context(), "s_unreadable_end", 0, sdd.SessionAppend{Events: []sdd.StoredEvent{{CodecVersion: tt.version, Code: sdd.SessionEndedEventCode, Payload: json.RawMessage(tt.payload)}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, err = f.app.ResumeWorkflow(t.Context(), f.identity, sdd.WorkflowResumeRequest{SessionID: "s_unreadable_end"})
+			if err == nil {
+				t.Fatal("unreadable ending resumed")
+			}
+			_, err = f.app.CollectSessions(t.Context(), sdd.CollectSessionsCmd{})
+			if err != nil {
+				t.Fatalf("unreadable ending should be skipped by collection: %v", err)
+			}
+			if _, err := f.sessions.Load(t.Context(), "s_unreadable_end"); err != nil {
+				t.Fatalf("session lost: %v", err)
+			}
+		})
+	}
+}
+
+func TestCancellationOutcomeUpdatesSessionListing(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		returnStep string
+		shell      bool
+	}{
+		{name: "returns to the recorded interaction", returnStep: "playback"},
+		{name: "closes an instance without preceding interaction"},
+		{name: "closing the shell ends the session", shell: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCollectFixture(t)
+			started := `{"procedure":"capture","step":"publish"}`
+			if tc.returnStep != "" {
+				started = `{"procedure":"capture","step":"playback"}`
+			} else if tc.shell {
+				started = `{"procedure":"user-dialogue","class":"shell","step":"publish"}`
+			}
+			events := []string{legacyEvent("s_cancelled", 1, "i_1", "started", f.now.Format(time.RFC3339), started)}
+			if tc.returnStep != "" {
+				events = append(events,
+					legacyEvent("s_cancelled", 2, "i_1", "chooser_answer", f.now.Format(time.RFC3339), `{"chooser":"playback","choice":"confirm"}`),
+					legacyEvent("s_cancelled", 3, "i_1", "transition", f.now.Format(time.RFC3339), `{"from":"playback","to":"publish"}`))
+			}
+			ref := len(events) + 1
+			events = append(events,
+				legacyEvent("s_cancelled", ref, "i_1", "mutation_intent", f.now.Format(time.RFC3339), `{"step":"publish","fn":"newEntry","values":{"entryId":"20260914-010001-s-tac-new"}}`),
+				legacyEvent("s_cancelled", ref+1, "i_1", "mutation_outcome", f.now.Format(time.RFC3339), fmt.Sprintf(`{"step":"publish","fn":"newEntry","intent_ref":%d,"outcome":"cancelled","return_step":%q}`, ref, tc.returnStep)))
+			f.writeLegacyLog(t, "s_cancelled", "", events...)
+			listed, err := f.app.ListWorkflowSessions(t.Context(), f.identity, f.project)
+			if err != nil || len(listed) != 1 {
+				t.Fatalf("session listing = %+v, %v", listed, err)
+			}
+			if tc.returnStep == "" {
+				if len(listed[0].Open) != 0 {
+					t.Fatalf("cancelled instance still listed open: %+v", listed[0].Open)
+				}
+			} else if len(listed[0].Open) != 1 || listed[0].Open[0].Step != tc.returnStep {
+				t.Fatalf("cancelled instance lost return position: %+v", listed[0].Open)
+			}
+			if tc.shell {
+				_, _, err := f.app.ResumeWorkflow(t.Context(), f.identity, sdd.WorkflowResumeRequest{SessionID: "s_cancelled"})
+				var appErr *sdd.ApplicationError
+				if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorSessionEnded {
+					t.Fatalf("cancelled shell must end its session: %v", err)
+				}
+			}
+		})
 	}
 }

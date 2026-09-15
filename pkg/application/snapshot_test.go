@@ -19,7 +19,7 @@ topics:
 The public snapshot fixture has no filesystem dependency.`
 
 func TestBuildSnapshotAndFilesystemLoaderConverge(t *testing.T) {
-	document, err := parseEntryDocument("2026/07/13-010000-s-tac-api.md", []byte(snapshotEntry))
+	document, err := ParseEntryDocument("2026/07/13-010000-s-tac-api.md", []byte(snapshotEntry))
 	if err != nil {
 		t.Fatal(err)
 	}

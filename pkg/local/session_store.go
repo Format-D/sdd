@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/networkteam/sdd/internal/engine"
@@ -91,7 +92,7 @@ func (s *FilesystemSessionStore) Create(_ context.Context, metadata app.SessionM
 	if err := file.Close(); err != nil {
 		return app.StoredSession{}, err
 	}
-	return app.StoredSession{Metadata: metadata, Version: 1}, nil
+	return app.StoredSession{Metadata: metadata}, nil
 }
 
 func (s *FilesystemSessionStore) Load(_ context.Context, id app.SessionID) (app.StoredSession, error) {
@@ -111,7 +112,8 @@ func (s *FilesystemSessionStore) Load(_ context.Context, id app.SessionID) (app.
 		return app.StoredSession{}, err
 	}
 	defer unlock(lock)
-	return readSessionLog(located, name, id)
+	stored, _, err := readSessionLog(located, name, id)
+	return stored, err
 }
 
 // List walks the logs in ID order from the cursor and reads only until the page
@@ -155,7 +157,7 @@ func (s *FilesystemSessionStore) List(_ context.Context, filter app.SessionFilte
 		if err != nil {
 			return app.SessionPage{}, err
 		}
-		stored, err := readSessionLog(found.location, found.name, id)
+		stored, _, err := readSessionLog(found.location, found.name, id)
 		unlock(lock)
 		if err != nil {
 			// A log this binary cannot read may belong to a newer version.
@@ -176,6 +178,9 @@ func (s *FilesystemSessionStore) Append(
 	expectedVersion uint64,
 	appendData app.SessionAppend,
 ) (uint64, error) {
+	if len(appendData.Events) == 0 {
+		return 0, &app.ApplicationError{Code: app.ErrorInvalidArgument, Message: "session append requires events"}
+	}
 	name, err := sessionLogName(id)
 	if err != nil {
 		return 0, err
@@ -193,7 +198,7 @@ func (s *FilesystemSessionStore) Append(
 	}
 	defer unlock(lock)
 
-	stored, err := readSessionLog(located, name, id)
+	stored, lines, err := readSessionLog(located, name, id)
 	if err != nil {
 		return 0, err
 	}
@@ -216,8 +221,14 @@ func (s *FilesystemSessionStore) Append(
 	if err != nil {
 		return 0, err
 	}
-	next := stored.Version + 1
-	line := sessionLine{Version: next, Metadata: appendData.Metadata, Events: appendData.Events}
+	next := stored.Version + uint64(len(appendData.Events))
+	events := append([]app.StoredEvent(nil), appendData.Events...)
+	now := time.Now().UTC()
+	for i := range events {
+		events[i].Sequence = stored.Version + uint64(i) + 1
+		events[i].CreatedAt = now
+	}
+	line := sessionLine{Version: lines + 1, Metadata: appendData.Metadata, Events: events}
 	if err := writeSessionLine(file, line); err != nil {
 		return 0, errors.Join(err, file.Close())
 	}
@@ -308,21 +319,21 @@ func listSessionLogs(dir string) ([]string, error) {
 	return names, nil
 }
 
-func readSessionLog(location StoreLocation, name string, id app.SessionID) (app.StoredSession, error) {
+func readSessionLog(location StoreLocation, name string, id app.SessionID) (app.StoredSession, uint64, error) {
 	root, err := openStoreRoot(location.Sessions, false)
 	if errors.Is(err, fs.ErrNotExist) {
-		return app.StoredSession{}, fmt.Errorf("%w: %s", app.ErrSessionNotFound, id)
+		return app.StoredSession{}, 0, fmt.Errorf("%w: %s", app.ErrSessionNotFound, id)
 	}
 	if err != nil {
-		return app.StoredSession{}, err
+		return app.StoredSession{}, 0, err
 	}
 	defer func() { _ = root.Close() }()
 	file, err := root.Open(name)
 	if errors.Is(err, fs.ErrNotExist) {
-		return app.StoredSession{}, fmt.Errorf("%w: %s", app.ErrSessionNotFound, id)
+		return app.StoredSession{}, 0, fmt.Errorf("%w: %s", app.ErrSessionNotFound, id)
 	}
 	if err != nil {
-		return app.StoredSession{}, err
+		return app.StoredSession{}, 0, err
 	}
 	defer func() { _ = file.Close() }()
 	return decodeSessionLog(file, id, app.SessionMetadata{
@@ -332,6 +343,7 @@ func readSessionLog(location StoreLocation, name string, id app.SessionID) (app.
 	})
 }
 
+// sessionLine.Version counts append frames independently of public event positions.
 type sessionLine struct {
 	Version  uint64               `json:"version"`
 	Metadata *app.SessionMetadata `json:"metadata,omitempty"`
@@ -348,7 +360,7 @@ type sessionLine struct {
 // Decoding is lenient about unknown fields in both directions. That is what
 // lets one binary read a log another version wrote — including a newer one —
 // and it is why no registry of retired fields is needed.
-func decodeSessionLog(reader io.Reader, id app.SessionID, fallback app.SessionMetadata) (app.StoredSession, error) {
+func decodeSessionLog(reader io.Reader, id app.SessionID, fallback app.SessionMetadata) (app.StoredSession, uint64, error) {
 	stored := app.StoredSession{Metadata: fallback}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxSessionLine)
@@ -364,53 +376,62 @@ func decodeSessionLog(reader io.Reader, id app.SessionID, fallback app.SessionMe
 			Version *uint64 `json:"version"`
 		}
 		if err := json.Unmarshal(raw, &envelope); err != nil {
-			return app.StoredSession{}, fmt.Errorf("sdd: decoding session %s line %d: %w", id, lineNumber, err)
+			return app.StoredSession{}, 0, fmt.Errorf("sdd: decoding session %s line %d: %w", id, lineNumber, err)
 		}
 		if envelope.Version == nil {
 			event, err := decodeLegacyEvent(raw, id, lineNumber)
 			if err != nil {
-				return app.StoredSession{}, err
+				return app.StoredSession{}, 0, err
 			}
 			foldLegacyMetadata(&stored.Metadata, event)
 			stored.Events = append(stored.Events, app.StoredEvent{
+				Sequence:     stored.Version + 1,
+				CreatedAt:    event.TS,
 				CodecVersion: app.SessionCodecVersion,
 				Code:         app.WorkflowEventCode,
 				Payload:      bytes.Clone(raw),
 			})
-			stored.Version = lineNumber
+			stored.Version++
 			continue
 		}
 
 		var line sessionLine
 		if err := json.Unmarshal(raw, &line); err != nil {
-			return app.StoredSession{}, fmt.Errorf("sdd: decoding session %s line %d: %w", id, lineNumber, err)
+			return app.StoredSession{}, 0, fmt.Errorf("sdd: decoding session %s line %d: %w", id, lineNumber, err)
 		}
 		if line.Version != lineNumber {
-			return app.StoredSession{}, fmt.Errorf(
+			return app.StoredSession{}, 0, fmt.Errorf(
 				"sdd: session %s has non-sequential version %d at line %d", id, line.Version, lineNumber,
 			)
 		}
 		if line.Metadata != nil {
 			stored.Metadata = *line.Metadata
 		}
-		stored.Events = append(stored.Events, line.Events...)
-		stored.Version = line.Version
+		for _, event := range line.Events {
+			next := stored.Version + 1
+			if event.Sequence != 0 && event.Sequence != next {
+				return app.StoredSession{}, 0, fmt.Errorf("sdd: session %s has event sequence %d, want %d", id, event.Sequence, next)
+			}
+			event.Sequence = next
+			stored.Events = append(stored.Events, event)
+			stored.Version = next
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		return app.StoredSession{}, err
+		return app.StoredSession{}, 0, err
 	}
 	if lineNumber == 0 {
-		return app.StoredSession{}, fmt.Errorf("sdd: session %s is empty", id)
+		return app.StoredSession{}, 0, fmt.Errorf("sdd: session %s is empty", id)
 	}
 	if stored.Metadata.ID == "" {
 		stored.Metadata.ID = id
 	}
 	if stored.Metadata.ID != id {
-		return app.StoredSession{}, fmt.Errorf(
+		return app.StoredSession{}, 0, fmt.Errorf(
 			"sdd: session log %s declares identity %s", id, stored.Metadata.ID,
 		)
 	}
-	return stored, nil
+	return stored, lineNumber, nil
 }
 
 func decodeLegacyEvent(raw []byte, id app.SessionID, lineNumber uint64) (engine.Event, error) {

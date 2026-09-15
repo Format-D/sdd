@@ -51,6 +51,14 @@ func releasedFormats() []releasedFormat {
 			wantEvents:      1,
 		},
 		{
+			name: "batched events after metadata-only frames",
+			log: `{"version":1,"metadata":{"ID":"s_compat","Subject":"local","Project":"PROJECT","Participant":"Christopher"}}` + "\n" +
+				`{"version":2,"metadata":{"ID":"s_compat","Subject":"local","Project":"PROJECT","Participant":"Christopher","Label":"renamed"}}` + "\n" +
+				`{"version":3,"events":[{"CodecVersion":1,"Code":"first"},{"CodecVersion":1,"Code":"second"}]}` + "\n",
+			wantParticipant: "Christopher",
+			wantEvents:      2,
+		},
+		{
 			name: "current envelope",
 			log: `{"version":1,"metadata":{"CodecVersion":1,"ID":"s_compat","Subject":"local","Project":"PROJECT","Participant":"Christopher","Label":"","Attachment":null,"AttachmentHistory":null,"UpdatedAt":"2026-07-30T09:00:00Z"}}` + "\n" +
 				`{"version":2,"events":[{"CodecVersion":1,"Code":"workflow_event","Payload":{"v":1,"seq":1,"event":"started"}}]}` + "\n",
@@ -132,8 +140,19 @@ func TestEveryReleasedFormatIsLiveInEveryLocation(t *testing.T) {
 					t.Fatalf("events = %d, want %d", len(stored.Events), format.wantEvents)
 				}
 
+				if stored.Version != uint64(format.wantEvents) {
+					t.Fatalf("version = %d, want event tip %d", stored.Version, format.wantEvents)
+				}
+				for i, event := range stored.Events {
+					if event.Sequence != uint64(i)+1 {
+						t.Fatalf("event sequence = %d, want %d", event.Sequence, i+1)
+					}
+					if format.name != "pre-0.16 event-only" && !event.CreatedAt.IsZero() {
+						t.Fatal("timestamp-less historical event acquired an invented timestamp")
+					}
+				}
 				next, err := store.Append(t.Context(), compatSessionID, stored.Version, sdd.SessionAppend{
-					Events: []sdd.StoredEvent{{CodecVersion: 1, Code: "workflow_event", Payload: json.RawMessage(`{"appended":true}`)}},
+					Events: []sdd.StoredEvent{{CodecVersion: 1, Code: "workflow_event", Payload: json.RawMessage(`{"appended":true}`)}, {CodecVersion: 1, Code: "continued"}},
 				})
 				if err != nil {
 					t.Fatalf("Append: %v", err)
@@ -162,11 +181,19 @@ func TestEveryReleasedFormatIsLiveInEveryLocation(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Load after append: %v", err)
 				}
+				if next != stored.Version+2 {
+					t.Fatalf("appended version = %d, want %d", next, stored.Version+2)
+				}
+				for i, event := range reloaded.Events[format.wantEvents:] {
+					if event.Sequence != stored.Version+uint64(i)+1 || event.CreatedAt.IsZero() {
+						t.Fatalf("appended event lacks assigned position/time: %+v", event)
+					}
+				}
 				if reloaded.Version != next {
 					t.Fatalf("reloaded version = %d, want %d", reloaded.Version, next)
 				}
-				if len(reloaded.Events) != format.wantEvents+1 {
-					t.Fatalf("reloaded events = %d, want %d", len(reloaded.Events), format.wantEvents+1)
+				if len(reloaded.Events) != format.wantEvents+2 {
+					t.Fatalf("reloaded events = %d, want %d", len(reloaded.Events), format.wantEvents+2)
 				}
 			})
 		}

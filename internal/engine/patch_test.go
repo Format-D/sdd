@@ -36,9 +36,10 @@ steps:
 // recordingSink keeps events so tests can assert what the log carries.
 type recordingSink struct{ events []engine.Event }
 
-func (s *recordingSink) Append(ev engine.Event) error {
+func (s *recordingSink) Append(ev engine.Event) (uint64, error) {
+	ev.Position = uint64(ev.Seq)
 	s.events = append(s.events, ev)
-	return nil
+	return ev.Position, nil
 }
 
 func startPatchSession(t *testing.T) (*engine.Session, *recordingSink, string) {

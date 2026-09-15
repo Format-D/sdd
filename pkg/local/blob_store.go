@@ -4,34 +4,22 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	app "github.com/networkteam/sdd/pkg/application"
 )
 
-const (
-	blobSuffix         = ".blob"
-	blobMetadataSuffix = ".json"
-	blobRetentionsName = "retentions.json"
-)
+const blobSuffix = ".blob"
 
-// FilesystemStagedBlobStore keeps a session's staged bytes under
-// <subject>/<session>/, so the path itself says whose they are. That is what
-// makes a sweep possible without reading anything: enumeration is a directory
-// walk, and a staging area with nothing in it is still fully identified.
-//
-// Like the session store it reads across every configured location and writes
-// where it resolved.
+// FilesystemStagedBlobStore keeps immutable bytes under <subject>/<session>/.
+// Existing configured locations remain readable; new bytes use the first one.
 type FilesystemStagedBlobStore struct {
 	locations []StoreLocation
 	mu        sync.Mutex
@@ -88,28 +76,14 @@ func (s *FilesystemStagedBlobStore) Stage(
 		return app.StagedBlob{}, err
 	}
 	blob := app.StagedBlob{
-		ID: id, Session: ref, Digest: sha256Digest(data), Size: int64(len(data)), Filename: filename,
-		CreatedAt: time.Now().UTC().Round(0),
+		ID: id, Size: int64(len(data)), Filename: filename,
 	}
 	blobName := filepath.Join(dir, id+blobSuffix)
 	if err := publishBytes(root, blobName, data); err != nil {
 		return app.StagedBlob{}, err
 	}
-	if err := publishJSON(root, filepath.Join(dir, id+blobMetadataSuffix), blob); err != nil {
-		return app.StagedBlob{}, errors.Join(err, root.Remove(blobName))
-	}
-	return blob, nil
-}
 
-func (s *FilesystemStagedBlobStore) Stat(_ context.Context, ref app.SessionRef, id string) (app.StagedBlob, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	root, dir, err := s.resolve(ref)
-	if err != nil {
-		return app.StagedBlob{}, err
-	}
-	defer func() { _ = root.Close() }()
-	return readBlobMetadata(root, dir, ref, id)
+	return blob, nil
 }
 
 func (s *FilesystemStagedBlobStore) Open(_ context.Context, ref app.SessionRef, id string) (io.ReadCloser, error) {
@@ -120,136 +94,14 @@ func (s *FilesystemStagedBlobStore) Open(_ context.Context, ref app.SessionRef, 
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	if _, err := readBlobMetadata(root, dir, ref, id); err != nil {
+	if err := validBlobID(id); err != nil {
 		return nil, err
 	}
 	return root.Open(filepath.Join(dir, id+blobSuffix))
 }
 
-func (s *FilesystemStagedBlobStore) Retain(
-	_ context.Context,
-	ref app.SessionRef,
-	retentionID string,
-	ids []string,
-) error {
-	if retentionID == "" {
-		return fmt.Errorf("sdd: retention ID is required")
-	}
-	// A retention over no blobs holds nothing, so it writes nothing. This is
-	// what keeps a session that staged nothing from leaving a staging area
-	// behind for a sweep to puzzle over later.
-	if len(ids) == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	root, dir, err := s.resolve(ref)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-	if err := root.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if _, err := readBlobMetadata(root, dir, ref, id); err != nil {
-			return err
-		}
-	}
-	retentions, err := readRetentions(root, dir)
-	if err != nil {
-		return err
-	}
-	retentions[retentionID] = append([]string(nil), ids...)
-	return publishJSON(root, filepath.Join(dir, blobRetentionsName), retentions)
-}
-
-// Release drops one retention. A session with nothing staged has nothing to
-// release, so this creates no directory — an empty staging area would be
-// scaffolding that never held anything.
-func (s *FilesystemStagedBlobStore) Release(_ context.Context, ref app.SessionRef, retentionID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	root, dir, err := s.resolve(ref)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-	retentions, err := readRetentions(root, dir)
-	if err != nil {
-		return err
-	}
-	if _, held := retentions[retentionID]; !held {
-		return nil
-	}
-	delete(retentions, retentionID)
-	return publishJSON(root, filepath.Join(dir, blobRetentionsName), retentions)
-}
-
-// StagedSessions enumerates every staging area across all locations, read
-// straight from the paths.
-func (s *FilesystemStagedBlobStore) StagedSessions(_ context.Context, after app.SessionRef, limit int) (app.StagedSessionPage, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	var refs []app.SessionRef
-	seen := make(map[app.SessionRef]struct{})
-	for _, location := range s.locations {
-		root, err := openStoreRoot(location.StagedBlobs, false)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return app.StagedSessionPage{}, err
-		}
-		subjects, readErr := fs.ReadDir(root.FS(), ".")
-		if readErr != nil {
-			return app.StagedSessionPage{}, errors.Join(readErr, root.Close())
-		}
-		for _, subject := range subjects {
-			if !subject.IsDir() || strings.HasPrefix(subject.Name(), ".") {
-				continue
-			}
-			sessions, err := fs.ReadDir(root.FS(), subject.Name())
-			if err != nil {
-				return app.StagedSessionPage{}, errors.Join(err, root.Close())
-			}
-			for _, session := range sessions {
-				if !session.IsDir() || strings.HasPrefix(session.Name(), ".") {
-					continue
-				}
-				ref := app.SessionRef{Subject: subject.Name(), Session: app.SessionID(session.Name())}
-				if _, duplicate := seen[ref]; duplicate || ref.AtOrBefore(after) {
-					continue
-				}
-				seen[ref] = struct{}{}
-				refs = append(refs, ref)
-			}
-		}
-		if err := root.Close(); err != nil {
-			return app.StagedSessionPage{}, err
-		}
-	}
-	return pageStagedSessions(refs, limit), nil
-}
-
-// pageStagedSessions orders the refs and cuts one page, naming where it stopped.
-func pageStagedSessions(refs []app.SessionRef, limit int) app.StagedSessionPage {
-	sort.Slice(refs, func(i, j int) bool { return refs[i].Compare(refs[j]) < 0 })
-	page := app.StagedSessionPage{Sessions: refs}
-	if limit > 0 && len(refs) > limit {
-		page.Sessions = refs[:limit]
-		page.Next = refs[limit-1]
-	}
-	return page
-}
-
-// DeleteStaged removes a session's staged blobs and retentions together. An
-// area that is already gone is success, so a sweep is safe to repeat and safe to
-// run concurrently with another.
+// DeleteStaged removes a session's resources across its known locations.
+// An area that is already gone is success.
 func (s *FilesystemStagedBlobStore) DeleteStaged(_ context.Context, ref app.SessionRef) error {
 	dir, err := stagingDir(ref)
 	if err != nil {
@@ -305,33 +157,6 @@ func (s *FilesystemStagedBlobStore) resolve(ref app.SessionRef) (*os.Root, strin
 	return root, dir, err
 }
 
-func readBlobMetadata(root *os.Root, dir string, ref app.SessionRef, id string) (app.StagedBlob, error) {
-	if err := validBlobID(id); err != nil {
-		return app.StagedBlob{}, err
-	}
-	var blob app.StagedBlob
-	if err := readJSON(root, filepath.Join(dir, id+blobMetadataSuffix), &blob); err != nil {
-		return app.StagedBlob{}, err
-	}
-	if blob.Session != ref || blob.ID != id {
-		return app.StagedBlob{}, fmt.Errorf("sdd: staged blob does not belong to session %s", ref.Session)
-	}
-	return blob, nil
-}
-
-// readRetentions reads a staging area's retentions. It creates nothing: a
-// missing file surfaces as fs.ErrNotExist for the caller to interpret.
-func readRetentions(root *os.Root, dir string) (map[string][]string, error) {
-	retentions := map[string][]string{}
-	if err := readJSON(root, filepath.Join(dir, blobRetentionsName), &retentions); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return retentions, nil
-		}
-		return nil, err
-	}
-	return retentions, nil
-}
-
 func removeStagingDir(root *os.Root, dir string) error {
 	entries, err := fs.ReadDir(root.FS(), dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -350,18 +175,6 @@ func removeStagingDir(root *os.Root, dir string) error {
 		return err
 	}
 	return syncRootDir(root, filepath.Dir(dir))
-}
-
-func readJSON(root *os.Root, name string, destination any) error {
-	file, err := root.Open(name)
-	if err != nil {
-		return err
-	}
-	raw, readErr := io.ReadAll(file)
-	if err := errors.Join(readErr, file.Close()); err != nil {
-		return err
-	}
-	return json.Unmarshal(raw, destination)
 }
 
 // stagingDir is the readable path a session's staged blobs live under.

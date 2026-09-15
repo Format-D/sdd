@@ -2,8 +2,10 @@ package application_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,32 +18,6 @@ import (
 	pkgllm "github.com/networkteam/sdd/pkg/llm"
 	localadapter "github.com/networkteam/sdd/pkg/local"
 )
-
-type trackingBlobStore struct {
-	sdd.StagedBlobStore
-	mu         sync.Mutex
-	retained   int
-	released   int
-	releaseErr error
-}
-
-func (s *trackingBlobStore) Retain(ctx context.Context, owner sdd.SessionRef, id string, blobs []string) error {
-	s.mu.Lock()
-	s.retained++
-	s.mu.Unlock()
-	return s.StagedBlobStore.Retain(ctx, owner, id, blobs)
-}
-
-func (s *trackingBlobStore) Release(ctx context.Context, owner sdd.SessionRef, id string) error {
-	s.mu.Lock()
-	s.released++
-	err := s.releaseErr
-	s.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	return s.StagedBlobStore.Release(ctx, owner, id)
-}
 
 type toggleAppendSessionStore struct {
 	sdd.SessionStore
@@ -202,7 +178,7 @@ func openBinding(t *testing.T, sessions sdd.SessionStore, subject string, id sdd
 // clock-free in the sense that no lease can revoke the incumbent.
 func TestIncumbentContinuityHoldsWithoutExpiry(t *testing.T) {
 	now := time.Date(2026, 7, 13, 5, 0, 0, 0, time.UTC)
-	application, sessions, _, graph := newDurableApplication(t, func() time.Time { return now }, nil, nil)
+	application, sessions, graph := newDurableApplication(t, func() time.Time { return now }, nil, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "incumbent")
 	first := preparedEntry(t, graph.GraphStore, binding, "incumbent-first", "2026/07/13-050000-s-tac-in1.md")
@@ -220,7 +196,7 @@ func TestIncumbentContinuityHoldsWithoutExpiry(t *testing.T) {
 
 func TestPreparedTransitionRecoversUnknownApplyAndFinalizer(t *testing.T) {
 	finalizer := &failOnceFinalizer{}
-	application, sessions, blobs, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		return unknownAfterApplyStore{GraphStore: store}
 	}, []sdd.MutationFinalizer{finalizer})
 	identity := sdd.RequestIdentity{Subject: "christopher"}
@@ -229,9 +205,6 @@ func TestPreparedTransitionRecoversUnknownApplyAndFinalizer(t *testing.T) {
 	unknown, err := application.ApplyPrepared(t.Context(), identity, "example", binding, prepared)
 	if errorCode(err) != sdd.ErrorRecoveryRequired || unknown.Apply.State != sdd.MutationUnknown {
 		t.Fatalf("unknown ApplyPrepared = %+v, %v", unknown, err)
-	}
-	if blobs.released != 0 {
-		t.Fatal("unknown outcome released staged-blob retention")
 	}
 	if _, err := application.RecoverMutation(t.Context(), identity, sdd.RecoveryRequest{Session: unknown.Binding.SessionID, MutationID: prepared.Batch.ID, Verb: sdd.RecoveryDiscard}); errorCode(err) != sdd.ErrorRecoveryRequired {
 		t.Fatalf("discard after reconciled applied error = %v", err)
@@ -243,8 +216,8 @@ func TestPreparedTransitionRecoversUnknownApplyAndFinalizer(t *testing.T) {
 	}
 	recoveredResult, err = application.RecoverMutation(t.Context(), identity, sdd.RecoveryRequest{Session: recovered.Binding.SessionID, MutationID: prepared.Batch.ID, Verb: sdd.RecoveryFinalizeRetry})
 	recovered = recoveredResult.Transition
-	if err != nil || recovered.Apply.State != sdd.MutationApplied || finalizer.calls != 2 || blobs.released != 1 {
-		t.Fatalf("second recovery = %+v, %v; finalizer calls=%d released=%d", recovered, err, finalizer.calls, blobs.released)
+	if err != nil || recovered.Apply.State != sdd.MutationApplied || finalizer.calls != 2 {
+		t.Fatalf("second recovery = %+v, %v; finalizer calls=%d", recovered, err, finalizer.calls)
 	}
 	history, err := application.ListRecoveries(t.Context(), identity, "example", true)
 	if err != nil || len(history.Items) != 1 || history.Items[0].State != sdd.RecoveryDelivered || history.Items[0].Actionable() {
@@ -261,7 +234,7 @@ func TestPreparedTransitionRecoversUnknownApplyAndFinalizer(t *testing.T) {
 }
 
 func TestPreparedTransitionMergesUnrelatedAppendAndRejectsStaleBinding(t *testing.T) {
-	application, sessions, blobs, graph := newDurableApplication(t, time.Now, nil, nil)
+	application, sessions, graph := newDurableApplication(t, time.Now, nil, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "merge")
 	prepared := preparedEntry(t, graph.GraphStore, binding, "merge-revision", "2026/07/13-052000-s-tac-stl.md")
@@ -273,8 +246,8 @@ func TestPreparedTransitionMergesUnrelatedAppendAndRejectsStaleBinding(t *testin
 	// moved the store. It merges cleanly against the revalidated fresh revision
 	// instead of failing the stale pin, and never files a recovery.
 	result, err := application.ApplyPrepared(t.Context(), identity, "example", binding, prepared)
-	if err != nil || result.Apply.State != sdd.MutationApplied || blobs.released != 1 {
-		t.Fatalf("merge-under-append ApplyPrepared = %+v, %v; released=%d", result, err, blobs.released)
+	if err != nil || result.Apply.State != sdd.MutationApplied {
+		t.Fatalf("merge-under-append ApplyPrepared = %+v, %v", result, err)
 	}
 	pending, err := application.ListRecoveries(t.Context(), identity, "example", false)
 	if err != nil || len(pending.Items) != 0 {
@@ -294,7 +267,7 @@ func TestReconcileMutationRefreshesIntentOnlyProjectionBeforeVerbSelection(t *te
 		t.Fatal(err)
 	}
 	targets := &mutableTargetAcquirer{graph: graph, failNext: true}
-	application, sessions, blobs, _ := newDurableApplicationWithTargets(t, graph, targets)
+	application, sessions := newDurableApplicationWithTargets(t, graph, targets)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "intent-only")
 	prepared := preparedEntry(t, graph, binding, "intent-only", "2026/07/13-052300-s-tac-int.md")
@@ -325,8 +298,8 @@ func TestReconcileMutationRefreshesIntentOnlyProjectionBeforeVerbSelection(t *te
 	applied, err := application.RecoverMutation(t.Context(), identity, sdd.RecoveryRequest{
 		Session: result.Binding.SessionID, MutationID: prepared.Batch.ID, Verb: sdd.RecoveryApply,
 	})
-	if err != nil || applied.Transition.Apply.State != sdd.MutationApplied || blobs.released != 1 {
-		t.Fatalf("recovery apply = %+v, %v; released=%d", applied, err, blobs.released)
+	if err != nil || applied.Transition.Apply.State != sdd.MutationApplied {
+		t.Fatalf("recovery apply = %+v, %v", applied, err)
 	}
 	history, err := application.ListRecoveries(t.Context(), identity, "example", true)
 	if err != nil || len(history.Items) != 1 || history.Items[0].State != sdd.RecoveryDelivered || history.Items[0].Actionable() {
@@ -335,7 +308,7 @@ func TestReconcileMutationRefreshesIntentOnlyProjectionBeforeVerbSelection(t *te
 }
 
 func TestPreparedTransitionRejectsEmptyTargetAndStructuredDivergence(t *testing.T) {
-	application, sessions, _, graph := newDurableApplication(t, time.Now, nil, nil)
+	application, sessions, graph := newDurableApplication(t, time.Now, nil, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "validate-prepared")
 
@@ -410,25 +383,28 @@ func TestCreateEntryResolvesConcreteDefaultWithoutCWDAndReleasesAroundLLM(t *tes
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "create-default")
 	t.Chdir(t.TempDir())
-	created, err := application.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	draft := identifiedCaptureDraft(binding, 1, sdd.EntryDraft{
 		Kind: "fact", Layer: "tactical", Body: "Concrete target resolution must remain independent of the process working directory.", Confidence: "high",
 		Topics: []string{"implementation/engine"}, Index: &sdd.FactIndex{Title: "Concrete target resolution", Topic: "implementation/engine"},
 	})
+	created, err := preflightAndCreateEntry(t, application, identity, binding, draft)
 	if err != nil || created.EntryID == "" {
 		t.Fatalf("CreateEntry = %+v, %v", created, err)
 	}
 	targets.mu.Lock()
 	acquisitions, releases, active := targets.acquisitions, targets.releases, targets.active
 	targets.mu.Unlock()
-	if llmCalls != 2 || acquisitions != 2 || releases != 2 || active {
+	if llmCalls != 2 || acquisitions != 3 || releases != 3 || active {
 		t.Fatalf("LLM calls=%d acquisitions=%d releases=%d active=%v", llmCalls, acquisitions, releases, active)
 	}
 	stored, err := sessions.Load(t.Context(), binding.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sessionHasEvent(stored.Events, "mutation_intent", `"Target":{"project":"example","branch":"main"}`) {
-		t.Fatalf("ordinary capture did not persist its concrete default target: %+v", stored.Events)
+	for _, event := range stored.Events {
+		if event.Code == "mutation_intent" {
+			t.Fatal("CreateEntry persisted a second prepared payload ledger")
+		}
 	}
 	rel, err := model.IDToRelPath(created.EntryID)
 	if err != nil {
@@ -444,7 +420,7 @@ func TestCreateEntryResolvesConcreteDefaultWithoutCWDAndReleasesAroundLLM(t *tes
 }
 
 func TestPreparedRevalidationToleratesJSONRoundTripScalarTypes(t *testing.T) {
-	application, sessions, _, graph := newDurableApplication(t, time.Now, nil, nil)
+	application, sessions, graph := newDurableApplication(t, time.Now, nil, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "scalar-round-trip")
 	prepared := preparedEntry(t, graph.GraphStore, binding, "scalar-round-trip", "2026/07/13-052305-s-tac-sca.md")
@@ -471,7 +447,7 @@ func TestPreparedAttachmentCrossesHomeStagingIntoTargetGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	targets := &mutableTargetAcquirer{graph: target}
-	application, sessions, blobs, _ := newDurableApplicationWithHomeAndTargets(t, home, targets)
+	application, sessions := newDurableApplicationWithHomeAndTargets(t, home, targets)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "cross-target-attachment")
 	owner := sdd.SessionRef{Subject: binding.Subject, Session: binding.SessionID}
@@ -484,7 +460,7 @@ func TestPreparedAttachmentCrossesHomeStagingIntoTargetGraph(t *testing.T) {
 	prepared.Target.Branch = "work"
 	prepared.BlobIDs = []string{blob.ID}
 	prepared.Batch.Attachments = []sdd.AttachmentMaterialization{{
-		BlobID: blob.ID, Digest: blob.Digest, Size: blob.Size, SourceName: blob.Filename,
+		BlobID: blob.ID, Digest: sdd.BlobDigest{Algorithm: "sha256", Value: fmt.Sprintf("%x", sha256.Sum256(want))}, Size: blob.Size, SourceName: blob.Filename,
 		LogicalPath: "2026/07/13-052303-s-tac-att/evidence.txt",
 	}}
 	prepared.Batch.Digest, err = sdd.MutationBatchDigest(prepared.Batch)
@@ -502,14 +478,11 @@ func TestPreparedAttachmentCrossesHomeStagingIntoTargetGraph(t *testing.T) {
 	if _, err := home.ReadAttachmentPage(t.Context(), "20260713-052303-s-tac-att", "evidence.txt", 0, 1024); err == nil {
 		t.Fatal("cross-target attachment was written to the home graph")
 	}
-	if blobs.released != 1 {
-		t.Fatalf("home blob release count = %d", blobs.released)
-	}
 }
 
 func TestLegacyIntentRequiresAuthorizedAuditedTargetBinding(t *testing.T) {
 	authorizer := &recordingRecoveryAuthorizer{}
-	application, sessions, _, graph := newDurableApplication(t, time.Now, nil, nil, authorizer)
+	application, sessions, graph := newDurableApplication(t, time.Now, nil, nil, authorizer)
 	metadata := sdd.SessionMetadata{ID: "legacy-v1", Subject: "christopher", Project: "example"}
 	stored, err := sessions.Create(t.Context(), metadata)
 	if err != nil {
@@ -566,7 +539,7 @@ func TestRecoveryNonApplyPathsSurfaceTargetReleaseErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		targets := &mutableTargetAcquirer{graph: graph}
-		application, sessions, _, _ := newDurableApplicationWithTargets(t, graph, targets)
+		application, sessions := newDurableApplicationWithTargets(t, graph, targets)
 		identity := sdd.RequestIdentity{Subject: "christopher"}
 		binding := openBinding(t, sessions, identity.Subject, "release-discard")
 		// A structurally diverged intent files a discardable not-applied
@@ -595,7 +568,7 @@ func TestRecoveryNonApplyPathsSurfaceTargetReleaseErrors(t *testing.T) {
 		}
 		graph := &pendingUnknownStore{GraphStore: base}
 		targets := &mutableTargetAcquirer{graph: graph}
-		application, sessions, _, _ := newDurableApplicationWithTargets(t, graph, targets)
+		application, sessions := newDurableApplicationWithTargets(t, graph, targets)
 		identity := sdd.RequestIdentity{Subject: "christopher"}
 		binding := openBinding(t, sessions, identity.Subject, "release-abandon")
 		prepared := preparedEntry(t, base, binding, "release-abandon", "2026/07/13-052320-s-tac-abn.md")
@@ -618,7 +591,7 @@ func TestRecoveryNonApplyPathsSurfaceTargetReleaseErrors(t *testing.T) {
 		graph := unknownAfterApplyStore{GraphStore: base}
 		finalizer := &failOnceFinalizer{}
 		targets := &mutableTargetAcquirer{graph: graph, finalizers: []sdd.MutationFinalizer{finalizer}}
-		application, sessions, _, _ := newDurableApplicationWithTargets(t, graph, targets)
+		application, sessions := newDurableApplicationWithTargets(t, graph, targets)
 		identity := sdd.RequestIdentity{Subject: "christopher"}
 		binding := openBinding(t, sessions, identity.Subject, "release-finalize")
 		prepared := preparedEntry(t, base, binding, "release-finalize", "2026/07/13-052330-s-tac-fin.md")
@@ -636,7 +609,7 @@ func TestRecoveryNonApplyPathsSurfaceTargetReleaseErrors(t *testing.T) {
 
 func TestReadSurfacesNeverReplayPendingMutation(t *testing.T) {
 	var pendingStore *pendingUnknownStore
-	application, sessions, blobs, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		pendingStore = &pendingUnknownStore{GraphStore: store}
 		return pendingStore
 	}, nil)
@@ -667,8 +640,8 @@ func TestReadSurfacesNeverReplayPendingMutation(t *testing.T) {
 	pendingStore.mu.Lock()
 	reconciles := pendingStore.reconciles
 	pendingStore.mu.Unlock()
-	if reconciles != 0 || blobs.released != 0 {
-		t.Fatalf("read surfaces reconciled %d times; released=%d", reconciles, blobs.released)
+	if reconciles != 0 {
+		t.Fatalf("read surfaces reconciled %d times", reconciles)
 	}
 	if _, err := application.RecoverMutation(t.Context(), identity, sdd.RecoveryRequest{
 		Session: result.Binding.SessionID, MutationID: prepared.Batch.ID, Verb: sdd.RecoveryApply,
@@ -683,14 +656,14 @@ func TestReadSurfacesNeverReplayPendingMutation(t *testing.T) {
 	abandoned, err := application.RecoverMutation(t.Context(), identity, sdd.RecoveryRequest{
 		Session: result.Binding.SessionID, MutationID: prepared.Batch.ID, Verb: sdd.RecoveryAbandonUnknown, Reason: "operator accepts unknown history",
 	})
-	if err != nil || abandoned.Item.State != sdd.RecoveryAbandoned || abandoned.Item.Reason != sdd.RecoveryReasonAbandonedUnknown || blobs.released != 1 {
-		t.Fatalf("abandon unknown = %+v, %v; released=%d", abandoned, err, blobs.released)
+	if err != nil || abandoned.Item.State != sdd.RecoveryAbandoned || abandoned.Item.Reason != sdd.RecoveryReasonAbandonedUnknown {
+		t.Fatalf("abandon unknown = %+v, %v", abandoned, err)
 	}
 }
 
 func TestRecoveryAuthorizationReceivesActorOwnerTargetAndDistinctVerb(t *testing.T) {
 	authorizer := &recordingRecoveryAuthorizer{}
-	application, sessions, _, graph := newDurableApplication(t, time.Now, nil, nil, authorizer)
+	application, sessions, graph := newDurableApplication(t, time.Now, nil, nil, authorizer)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	binding := openBinding(t, sessions, identity.Subject, "authorize-recovery")
 	// A structurally diverged intent yields an actionable recovery item to
@@ -719,7 +692,7 @@ func TestRecoveryAuthorizationReceivesActorOwnerTargetAndDistinctVerb(t *testing
 	}
 }
 
-func TestPreparedTransitionSurfacesIntentAppendAndRetentionReleaseFailures(t *testing.T) {
+func TestPreparedTransitionSurfacesIntentAppendFailure(t *testing.T) {
 	graph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "example", GraphDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -733,7 +706,7 @@ func TestPreparedTransitionSurfacesIntentAppendAndRetentionReleaseFailures(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	blobs := &trackingBlobStore{StagedBlobStore: baseBlobs, releaseErr: errors.New("injected release failure")}
+	blobs := baseBlobs
 	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main", Graph: graph,
 		LLM: pkgllm.RunnerFunc(func(context.Context, pkgllm.Request) (pkgllm.Result, error) {
@@ -753,13 +726,13 @@ func TestPreparedTransitionSurfacesIntentAppendAndRetentionReleaseFailures(t *te
 	sessions.fail(errors.New("injected intent append failure"))
 
 	_, err = application.ApplyPrepared(t.Context(), identity, "example", binding, prepared)
-	if err == nil || !strings.Contains(err.Error(), "injected intent append failure") || !strings.Contains(err.Error(), "injected release failure") {
-		t.Fatalf("ApplyPrepared error = %v, want both append and release failures", err)
+	if err == nil || !strings.Contains(err.Error(), "injected intent append failure") {
+		t.Fatalf("ApplyPrepared error = %v, want the intent append failure", err)
 	}
 }
 
 func TestSessionReplayFailsClosedForUnsupportedCodec(t *testing.T) {
-	application, sessions, _, _ := newDurableApplication(t, time.Now, nil, nil)
+	application, sessions, _ := newDurableApplication(t, time.Now, nil, nil)
 	created, err := sessions.Create(t.Context(), sdd.SessionMetadata{ID: "future", Subject: "christopher", Project: "example"})
 	if err != nil {
 		t.Fatal(err)
@@ -782,7 +755,7 @@ type graphFixture struct {
 	dir string
 }
 
-func newDurableApplication(t *testing.T, now func() time.Time, wrap func(sdd.GraphStore) sdd.GraphStore, finalizers []sdd.MutationFinalizer, authorizers ...sdd.RecoveryAuthorizer) (*sdd.Application, *localadapter.FilesystemSessionStore, *trackingBlobStore, graphFixture) {
+func newDurableApplication(t *testing.T, now func() time.Time, wrap func(sdd.GraphStore) sdd.GraphStore, finalizers []sdd.MutationFinalizer, authorizers ...sdd.RecoveryAuthorizer) (*sdd.Application, *localadapter.FilesystemSessionStore, graphFixture) {
 	t.Helper()
 	dir := t.TempDir()
 	baseGraph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "example", GraphDir: dir})
@@ -801,7 +774,7 @@ func newDurableApplication(t *testing.T, now func() time.Time, wrap func(sdd.Gra
 	if err != nil {
 		t.Fatal(err)
 	}
-	blobs := &trackingBlobStore{StagedBlobStore: baseBlobs}
+	blobs := baseBlobs
 	authorizer := sdd.RecoveryAuthorizer(sdd.RecoveryAuthorizerFunc(func(context.Context, sdd.RecoveryAccessRequest) error { return nil }))
 	if len(authorizers) > 0 {
 		authorizer = authorizers[0]
@@ -821,14 +794,14 @@ func newDurableApplication(t *testing.T, now func() time.Time, wrap func(sdd.Gra
 	if err != nil {
 		t.Fatal(err)
 	}
-	return application, sessions, blobs, graphFixture{GraphStore: baseGraph, dir: dir}
+	return application, sessions, graphFixture{GraphStore: baseGraph, dir: dir}
 }
 
-func newDurableApplicationWithTargets(t *testing.T, graph sdd.GraphStore, targets sdd.TargetAcquirer) (*sdd.Application, *localadapter.FilesystemSessionStore, *trackingBlobStore, graphFixture) {
+func newDurableApplicationWithTargets(t *testing.T, graph sdd.GraphStore, targets sdd.TargetAcquirer) (*sdd.Application, *localadapter.FilesystemSessionStore) {
 	return newDurableApplicationWithHomeAndTargets(t, graph, targets)
 }
 
-func newDurableApplicationWithHomeAndTargets(t *testing.T, home sdd.GraphStore, targets sdd.TargetAcquirer) (*sdd.Application, *localadapter.FilesystemSessionStore, *trackingBlobStore, graphFixture) {
+func newDurableApplicationWithHomeAndTargets(t *testing.T, home sdd.GraphStore, targets sdd.TargetAcquirer) (*sdd.Application, *localadapter.FilesystemSessionStore) {
 	t.Helper()
 	sessions, err := localadapter.NewFilesystemSessionStoreAt(t.TempDir())
 	if err != nil {
@@ -838,7 +811,7 @@ func newDurableApplicationWithHomeAndTargets(t *testing.T, home sdd.GraphStore, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	blobs := &trackingBlobStore{StagedBlobStore: baseBlobs}
+	blobs := baseBlobs
 	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main", Graph: branchReadFixture{GraphStore: home, targets: targets, project: "example"}, Targets: targets,
 		Recovery: sdd.RecoveryAuthorizerFunc(func(context.Context, sdd.RecoveryAccessRequest) error { return nil }),
@@ -853,7 +826,7 @@ func newDurableApplicationWithHomeAndTargets(t *testing.T, home sdd.GraphStore, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return application, sessions, blobs, graphFixture{GraphStore: home}
+	return application, sessions
 }
 
 func sessionHasEvent(events []sdd.StoredEvent, code, payloadFragment string) bool {

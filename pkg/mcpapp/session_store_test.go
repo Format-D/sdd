@@ -2,20 +2,24 @@ package mcpapp_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/networkteam/sdd/internal/engine"
 	sdd "github.com/networkteam/sdd/pkg/application"
 )
 
 type sessionStoreProbe struct {
 	sdd.SessionStore
-	loads     atomic.Int64
-	mu        sync.Mutex
-	remaining int
-	paused    chan *pausedSessionLoad
+	loads       atomic.Int64
+	mu          sync.Mutex
+	remaining   int
+	paused      chan *pausedSessionLoad
+	rejectEvent engine.EventType
 }
 
 type pausedSessionLoad struct {
@@ -69,4 +73,31 @@ func (s *sessionStoreProbe) NextLoad(t *testing.T) *pausedSessionLoad {
 		t.Fatalf("waiting for a paused session load: %v", ctx.Err())
 		return nil
 	}
+}
+
+func (s *sessionStoreProbe) FailNextEvent(kind engine.EventType) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejectEvent = kind
+}
+
+func (s *sessionStoreProbe) Append(ctx context.Context, id sdd.SessionID, version uint64, data sdd.SessionAppend) (uint64, error) {
+	s.mu.Lock()
+	for _, stored := range data.Events {
+		if s.rejectEvent == "" || stored.Code != sdd.WorkflowEventCode {
+			continue
+		}
+		var event engine.Event
+		if err := json.Unmarshal(stored.Payload, &event); err != nil {
+			s.mu.Unlock()
+			return version, err
+		}
+		if event.Event == s.rejectEvent {
+			s.rejectEvent = ""
+			s.mu.Unlock()
+			return version, errors.New("session event append unavailable")
+		}
+	}
+	s.mu.Unlock()
+	return s.SessionStore.Append(ctx, id, version, data)
 }

@@ -31,15 +31,17 @@ const (
 	// EventLabeled carries a human-meaningful session label (no instance):
 	// the dialogue's subject, agent-supplied and updatable as it sharpens.
 	// Last one wins on fold and replay.
-	EventLabeled       EventType = "labeled"
-	EventStarted       EventType = "started"
-	EventReport        EventType = "report"
-	EventChooserAnswer EventType = "chooser_answer"
-	EventOpResult      EventType = "op_result"
-	EventServed        EventType = "served"
-	EventTransition    EventType = "transition"
-	EventCompleted     EventType = "completed"
-	EventAbandoned     EventType = "abandoned"
+	EventLabeled         EventType = "labeled"
+	EventStarted         EventType = "started"
+	EventReport          EventType = "report"
+	EventChooserAnswer   EventType = "chooser_answer"
+	EventOpResult        EventType = "op_result"
+	EventMutationIntent  EventType = "mutation_intent"
+	EventMutationOutcome EventType = "mutation_outcome"
+	EventServed          EventType = "served"
+	EventTransition      EventType = "transition"
+	EventCompleted       EventType = "completed"
+	EventAbandoned       EventType = "abandoned"
 	// EventRead records what a read surface served to the session: the tool,
 	// the entry IDs, and the depth — metadata only, never payloads. Reads stay
 	// free and ungated; tracking is logging, not gating (d-tac-dbk). No
@@ -75,6 +77,8 @@ const (
 // source of truth; the log is the persistence, the session protocol, and
 // the forensic record — transition reports are the trajectory evidence.
 type Event struct {
+	// Position is assigned by the durable event store, independent of engine Seq.
+	Position uint64         `json:"-"`
 	V        int            `json:"v"`
 	TS       time.Time      `json:"ts"`
 	Session  string         `json:"session"`
@@ -87,7 +91,7 @@ type Event struct {
 // EventSink receives events as they happen. The shell wires it to an
 // append-only JSONL file; tests use an in-memory sink.
 type EventSink interface {
-	Append(Event) error
+	Append(Event) (uint64, error)
 }
 
 // WriterSink appends events as JSON lines to an io.Writer.
@@ -102,14 +106,14 @@ func NewWriterSink(w io.Writer) *WriterSink {
 }
 
 // Append writes the event as one JSON line.
-func (s *WriterSink) Append(e Event) error {
+func (s *WriterSink) Append(e Event) (uint64, error) {
 	b, err := json.Marshal(e)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	b = append(b, '\n')
 	_, err = s.w.Write(b)
-	return err
+	return uint64(e.Seq), err
 }
 
 // ReadEvents parses a JSONL session log.
@@ -128,6 +132,7 @@ func ReadEvents(r io.Reader) ([]Event, error) {
 		if err := json.Unmarshal(raw, &e); err != nil {
 			return nil, fmt.Errorf("session log line %d: %w", line, err)
 		}
+		e.Position = uint64(e.Seq)
 		events = append(events, e)
 	}
 	if err := scanner.Err(); err != nil {
@@ -228,7 +233,11 @@ type Session struct {
 	served map[string]bool
 	// sinkErr carries a deferred log-append failure; surfaced by the next
 	// advance call so a durability problem can't pass silently.
-	sinkErr error
+	sinkErr     error
+	intent      *MutationIntent
+	intentStore *Store
+	intentDone  bool
+	cancelled   *MutationCancellation
 }
 
 // SessionOption configures a session.
@@ -353,7 +362,7 @@ func (s *Session) Reorient() {
 // advance path. The event is forensic — nothing about the instance changes —
 // but it makes the shelving auditable and legible to a resuming agent.
 func (s *Session) Park(instanceID, note string) error {
-	if err := s.checkSink(); err != nil {
+	if err := s.checkProgression(); err != nil {
 		return err
 	}
 	inst, ok := s.instances[instanceID]
@@ -373,25 +382,23 @@ func (s *Session) Park(instanceID, note string) error {
 
 // appendEvent writes one event to the log. Sink errors fail loudly at the
 // call sites that can surface them; here the event is built centrally.
-func (s *Session) appendEvent(instance string, typ EventType, data map[string]any) {
-	if s.sink == nil {
-		return
+func (s *Session) appendEvent(instance string, typ EventType, data map[string]any) uint64 {
+	if s.sinkErr != nil {
+		return 0
 	}
 	s.seq++
-	// The sink owning durability means an append error must not corrupt the
-	// in-memory run; it is carried on the session and surfaced by the next
-	// advance call.
-	if err := s.sink.Append(Event{
-		V:        LogVersion,
-		TS:       s.now(),
-		Session:  s.ID,
-		Seq:      s.seq,
-		Instance: instance,
-		Event:    typ,
-		Data:     data,
-	}); err != nil && s.sinkErr == nil {
-		s.sinkErr = err
+	if s.sink == nil {
+		return uint64(s.seq)
 	}
+	position, err := s.sink.Append(Event{
+		V: LogVersion, TS: s.now(), Session: s.ID, Seq: s.seq,
+		Instance: instance, Event: typ, Data: data,
+	})
+	if err != nil {
+		s.sinkErr = err
+		return 0
+	}
+	return position
 }
 
 // Instances returns the session's instances in start order.
@@ -413,7 +420,7 @@ func (s *Session) Instance(id string) (*Instance, bool) {
 // then cascades and serves. Parent links a sub-procedure to its spawning
 // instance.
 func (s *Session) Start(spec *Spec, params map[string]any, parent string) (*Serve, error) {
-	if err := s.checkSink(); err != nil {
+	if err := s.checkProgression(); err != nil {
 		return nil, err
 	}
 	if len(spec.Steps) == 0 {
@@ -553,7 +560,7 @@ func recordDispatchSeed(inst *Instance, opt *Option) {
 // cascades. Reports can only write declared state fields; batched fields for
 // later steps are accepted. A report does not answer a pending chooser.
 func (s *Session) Report(instanceID string, fields map[string]any) (*Serve, error) {
-	if err := s.checkSink(); err != nil {
+	if err := s.checkProgression(); err != nil {
 		return nil, err
 	}
 	inst, ok := s.instances[instanceID]
@@ -580,6 +587,12 @@ func (s *Session) Report(instanceID string, fields map[string]any) (*Serve, erro
 		"step":   inst.Step,
 		"fields": logged,
 	})
+	if err := s.checkSink(); err != nil {
+		return nil, err
+	}
+	if inst.currentStep().Op == "" {
+		inst.interactionStep = inst.Step
+	}
 
 	if err := s.cascade(inst); err != nil {
 		return nil, err
@@ -593,7 +606,7 @@ func (s *Session) Report(instanceID string, fields map[string]any) (*Serve, erro
 // are limited to the option's collect list. User answers carry the user's
 // words verbatim for the auditable-relay record.
 func (s *Session) Answer(instanceID, chooser, choice string, fields map[string]any, userWords string) (*Serve, error) {
-	if err := s.checkSink(); err != nil {
+	if err := s.checkProgression(); err != nil {
 		return nil, err
 	}
 	inst, ok := s.instances[instanceID]
@@ -664,6 +677,10 @@ func (s *Session) Answer(instanceID, chooser, choice string, fields map[string]a
 		data["fields"] = fields
 	}
 	s.appendEvent(inst.ID, EventChooserAnswer, data)
+	if err := s.checkSink(); err != nil {
+		return nil, err
+	}
+	inst.interactionStep = inst.Step
 
 	// A dispatching junction's declared handoff rides the answered option:
 	// stash it so the next child started under this instance inherits it.
@@ -733,7 +750,7 @@ func (s *Session) Inject(instanceID string, call InjectCall) (any, *truncate.Cut
 // transition. It never cleans up implicitly — anything the instance holds
 // (a WIP marker, staged attachments) is left standing for resume or groom.
 func (s *Session) Abandon(instanceID, reason string) error {
-	if err := s.checkSink(); err != nil {
+	if err := s.checkProgression(); err != nil {
 		return err
 	}
 	inst, ok := s.instances[instanceID]
@@ -843,12 +860,16 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		if _, err := inst.Store.WriteState(fields); err != nil {
 			return err
 		}
+		if inst.currentStep().Op == "" {
+			inst.interactionStep = inst.Step
+		}
 
 	case EventChooserAnswer:
 		inst, err := s.replayInstance(ev)
 		if err != nil {
 			return err
 		}
+		inst.interactionStep = inst.Step
 		// The answer's own effects were logged separately (op_result,
 		// transition); collected fields ride the answer event.
 		if fields, ok := ev.Data["fields"].(map[string]any); ok {
@@ -873,16 +894,41 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 			}
 		}
 
-	case EventOpResult:
+	case EventMutationIntent:
+		return s.restoreIntent(ev)
+
+	case EventOpResult, EventMutationOutcome:
 		inst, err := s.replayInstance(ev)
 		if err != nil {
 			return err
+		}
+		if ev.Event == EventMutationOutcome {
+			if err := s.validateOutcome(ev); err != nil {
+				return err
+			}
+			if outcome, _ := ev.Data["outcome"].(string); outcome == MutationCancelled {
+				returnStep, ok := ev.Data["return_step"].(string)
+				if !ok || returnStep != inst.interactionStep {
+					return fmt.Errorf("cancelled outcome does not name its preceding interaction")
+				}
+				s.applyCancellation(inst, returnStep)
+				return nil
+			}
 		}
 		writes, _ := ev.Data["writes"].(map[string]any)
 		for name, v := range writes {
 			if err := inst.Store.importValue(name, ExportedValue{Value: v, Provenance: ProvenanceEngine}); err != nil {
 				return err
 			}
+		}
+
+		if step, _ := ev.Data["step"].(string); step == inst.Step {
+			if name, _ := ev.Data["fn"].(string); name == inst.currentStep().Op {
+				inst.opDone = true
+			}
+		}
+		if ev.Event == EventMutationOutcome {
+			s.intentDone = true
 		}
 
 	case EventTransition:

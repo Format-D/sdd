@@ -25,16 +25,21 @@ type FilesystemGraphStoreOptions struct {
 	GraphDir string
 	// Branch is the authority assigned by the target acquirer, if branch-scoped.
 	Branch string
+	// PublicationGit identifies a committed publication by the trailer its
+	// finalizer wrote; the finalizer, not the store, commits. Without it,
+	// publication recognizes retries by entry ID only.
+	PublicationGit *GitFinalizer
 }
 
 // FilesystemGraphStore is the local canonical graph authority. It owns its
 // revision cache and never requires callers to invalidate snapshots.
 type FilesystemGraphStore struct {
-	project   app.ProjectID
-	branch    string
-	dir       string
-	mu        sync.Mutex
-	snapshots map[string]*retainedSnapshot
+	project        app.ProjectID
+	branch         string
+	dir            string
+	mu             sync.Mutex
+	snapshots      map[string]*retainedSnapshot
+	publicationGit *GitFinalizer
 
 	beforeApplyOperation    func(int) error
 	beforeRollbackOperation func(int) error
@@ -82,9 +87,10 @@ func NewFilesystemGraphStore(options FilesystemGraphStoreOptions) (*FilesystemGr
 		return nil, fmt.Errorf("sdd: creating graph transaction directory: %w", err)
 	}
 	return &FilesystemGraphStore{
-		project: options.Project,
-		branch:  options.Branch,
-		dir:     options.GraphDir,
+		project:        options.Project,
+		branch:         options.Branch,
+		dir:            options.GraphDir,
+		publicationGit: options.PublicationGit,
 	}, nil
 }
 
@@ -429,8 +435,16 @@ func (s *FilesystemGraphStore) ReadAttachmentPage(_ context.Context, entryID, fi
 	return attachmentPageWithLocalPath(page, s.dir, entryID)
 }
 
-func (s *FilesystemGraphStore) lock() (*flock.Flock, error) {
-	lock := flock.New(filepath.Join(s.dir, ".sdd-runtime", "graph.lock"))
+func (s *FilesystemGraphStore) lock() (*flock.Flock, error) { return lockGraph(s.dir) }
+
+// lockGraph serializes every writer of one graph directory, the store and the
+// Git finalizer alike.
+func lockGraph(dir string) (*flock.Flock, error) {
+	runtimeDir := filepath.Join(dir, ".sdd-runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		return nil, err
+	}
+	lock := flock.New(filepath.Join(runtimeDir, "graph.lock"))
 	if err := lock.Lock(); err != nil {
 		return nil, err
 	}

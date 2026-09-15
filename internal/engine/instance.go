@@ -41,6 +41,8 @@ type Instance struct {
 	// stalled gate re-evaluated by a later report doesn't re-run its side
 	// effect. Reset on every transition.
 	opDone bool
+	// interactionStep excludes reports at automatic operation steps.
+	interactionStep string
 	// dispatchSeed is the handoff a dispatching junction declared when its
 	// option was answered — child field ← parent field. The next child started
 	// under this instance inherits it (seedFromParent). Empty until a
@@ -202,7 +204,7 @@ func (s *Session) funcContext(inst *Instance) (*Context, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolving current graph: %w", err)
 	}
-	return &Context{Store: inst.Store, Graph: graph, Step: inst.Step, Reads: s.reads}, nil
+	return &Context{Instance: inst.ID, Store: inst.Store, Graph: graph, Step: inst.Step, Reads: s.reads}, nil
 }
 
 // cascade advances gate steps until something stops them — a failing
@@ -316,32 +318,69 @@ func (s *Session) reopenStalePlayback(inst *Instance, failing []FailedPredicate)
 // runCommand executes a registry command at the instance's current step and
 // logs its engine writes as an op_result event.
 func (s *Session) runCommand(inst *Instance, name string) error {
+	if err := s.checkSink(); err != nil {
+		return err
+	}
 	cmd, ok := s.engine.Registry.Command(name)
 	if !ok {
 		return fmt.Errorf("instance %s: %q is not a registered command", inst.ID, name)
 	}
-	ctx, err := s.funcContext(inst)
-	if err != nil {
-		return err
+	ctx := &Context{Instance: inst.ID, Store: inst.Store, Step: inst.Step, Reads: s.reads}
+	if cmd.Prepare != nil {
+		if s.intent == nil || s.intentDone {
+			values, err := cmd.Prepare(ctx)
+			if err != nil {
+				return fmt.Errorf("preparing command %q: %w", name, err)
+			}
+			position := s.appendEvent(inst.ID, EventMutationIntent, map[string]any{
+				"step": inst.Step, "fn": name, "values": values,
+			})
+			if err := s.checkSink(); err != nil {
+				return err
+			}
+			s.intent = &MutationIntent{Ref: position, Instance: inst.ID, Step: inst.Step, Command: name, Values: values}
+			s.intentStore = inst.Store.Clone()
+			s.intentDone = false
+			s.cancelled = nil
+		}
+		if s.intent.Instance != inst.ID || s.intent.Step != inst.Step || s.intent.Command != name {
+			return s.pendingError()
+		}
+		ctx.Intent = s.intent
+	}
+	if !cmd.GraphIndependent {
+		loaded, err := s.funcContext(inst)
+		if err != nil {
+			return s.commandError(ctx.Intent, err)
+		}
+		ctx.Graph = loaded.Graph
 	}
 	candidate := inst.Store.Clone()
+	if ctx.Intent != nil {
+		candidate = s.intentStore.Clone()
+	}
 	ctx.Store = candidate
 	candidate.beginJournal()
-	err = cmd.Fn(ctx)
+	if err := cmd.Fn(ctx); err != nil {
+		return s.commandError(ctx.Intent, fmt.Errorf("command %q at step %s: %w", name, inst.Step, err))
+	}
 	writes := candidate.drainJournal()
-	if err != nil {
-		return fmt.Errorf("command %q at step %s: %w", name, inst.Step, err)
+	event := EventOpResult
+	if ctx.Intent != nil {
+		event = EventMutationOutcome
+	}
+	data := map[string]any{"step": inst.Step, "fn": name, "writes": writes}
+	if ctx.Intent != nil {
+		data["intent_ref"] = ctx.Intent.Ref
+	}
+	s.appendEvent(inst.ID, event, data)
+	if err := s.checkSink(); err != nil {
+		return err
 	}
 	inst.Store.commit(candidate)
-	s.appendEvent(inst.ID, EventOpResult, map[string]any{
-		"step":   inst.Step,
-		"fn":     name,
-		"writes": writes,
-	})
-	// A command that mutates the graph invalidates the provider so later reads
-	// in the same advance — the fidelity review of a just-written entry — see
-	// the write. Freshness is driven by the command's own declaration, not a
-	// separate refresh call a new write command could forget.
+	if ctx.Intent != nil {
+		s.intentDone = true
+	}
 	if cmd.MutatesGraph {
 		s.engine.Graphs.Invalidate()
 	}
@@ -352,12 +391,18 @@ func (s *Session) runCommand(inst *Instance, name string) error {
 // transition. The reopen flag marks the edit-after-confirm return to a
 // chooser.
 func (s *Session) transitionTo(inst *Instance, to string, reopen bool) error {
+	if err := s.checkSink(); err != nil {
+		return err
+	}
 	from := inst.Step
 	data := map[string]any{"from": from, "to": to}
 	if reopen {
 		data["reopen"] = true
 	}
 	s.appendEvent(inst.ID, EventTransition, data)
+	if err := s.checkSink(); err != nil {
+		return err
+	}
 
 	switch to {
 	case EndCompleted:

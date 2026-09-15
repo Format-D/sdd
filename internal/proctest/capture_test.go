@@ -39,9 +39,9 @@ func captureFixtureEntries() []*model.Entry {
 
 // newCaptureWorld opens a session over the capture fixtures that has read the
 // primary ref in full, so drafts against captureRefID pass refsInspected.
-func newCaptureWorld(t *testing.T, connID string) (*proctest.World, *proctest.Session) {
+func newCaptureWorld(t *testing.T, connID string, options ...proctest.Option) (*proctest.World, *proctest.Session) {
 	t.Helper()
-	world := proctest.NewWorld(t, proctest.WithEntries(captureFixtureEntries()...))
+	world := proctest.NewWorld(t, append(options, proctest.WithEntries(captureFixtureEntries()...))...)
 	session := world.Open(t, connID)
 	session.LogRead(t, "show", []string{captureRefID}, nil)
 	return world, session
@@ -589,9 +589,13 @@ func TestCapture_EditAfterConfirmReopensPlayback(t *testing.T) {
 		t.Fatalf("no entry may be written on a stale confirmation, produced %v", id)
 	}
 
-	// Re-confirming the edited state completes the write (the recorded
-	// override still skips pre-flight).
+	// Changed input invalidates the earlier finding and its override.
 	serve = session.Answer(t, instance, "playback", "confirm", nil, "yes, with the edit")
+	proctest.RequireStep(t, serve, "reviseOrOverride")
+	if got := world.LLM.Calls("preflight"); got != 2 {
+		t.Fatalf("edited input needs a new preflight, got %d calls", got)
+	}
+	serve = session.Answer(t, instance, "reviseOrOverride", "override", nil, "override this finding for the edited input")
 	proctest.RequireStep(t, serve, "verifySummary")
 	serve = session.Answer(t, instance, "verifySummary", "faithful", map[string]any{"fidelityNote": "matches"}, "")
 	proctest.RequireStatus(t, serve, "completed")

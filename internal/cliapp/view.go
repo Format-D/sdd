@@ -1,9 +1,8 @@
-package main
+package cliapp
 
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/networkteam/sdd/internal/finders"
 	"github.com/networkteam/sdd/internal/presenters"
@@ -65,7 +64,7 @@ func viewCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
-			if err := freshenRepoCaches(ctx, repoIDs); err != nil {
+			if err := freshenRepoCaches(ctx, cmd.ErrWriter, repoIDs); err != nil {
 				return err
 			}
 
@@ -86,7 +85,7 @@ func viewCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
-			presenters.RenderView(os.Stdout, result)
+			presenters.RenderView(cmd.Writer, result)
 
 			// Selected repos render the same layout over their own graphs,
 			// each under a repo heading — entry IDs inside a repo section
@@ -97,7 +96,7 @@ func viewCmd() *cli.Command {
 					return fmt.Errorf("loading graph for %s: %w", repoID, err)
 				}
 				if member == nil {
-					fmt.Fprintf(os.Stdout, "\n── repo: %s (unavailable) ──\n", repoID)
+					fmt.Fprintf(cmd.Writer, "\n── repo: %s (unavailable) ──\n", repoID)
 					continue
 				}
 				// The member graph records its own directory (loaded via
@@ -107,8 +106,8 @@ func viewCmd() *cli.Command {
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(os.Stdout, "\n── repo: %s ──\n", repoID)
-				presenters.RenderView(os.Stdout, mresult)
+				fmt.Fprintf(cmd.Writer, "\n── repo: %s ──\n", repoID)
+				presenters.RenderView(cmd.Writer, mresult)
 			}
 			return nil
 		},

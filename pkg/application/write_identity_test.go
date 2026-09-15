@@ -1,99 +1,23 @@
 package application_test
 
 import (
-	"context"
-	"errors"
-	"os"
-	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/networkteam/sdd/internal/model"
 	sdd "github.com/networkteam/sdd/pkg/application"
-	pkgllm "github.com/networkteam/sdd/pkg/llm"
-	localadapter "github.com/networkteam/sdd/pkg/local"
 )
 
-// End-to-end write-path coverage for the slice-1 identity kinds: an actor and a
-// role flow through CreateEntry with their kind-specific fields carried onto the
-// entry, persist, and pass model validation; a role missing its required actor
-// field surfaces the actionable *ValidationError (§7, s-prc-g0j) instead of a
-// silent write.
-
-func newIdentityWriteApp(t *testing.T) (*sdd.Application, sdd.RequestIdentity, sdd.SessionBinding, string) {
-	t.Helper()
-	dir := t.TempDir()
-	graph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "example", GraphDir: dir})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessions, err := localadapter.NewFilesystemSessionStoreAt(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	blobs, err := localadapter.NewFilesystemStagedBlobStoreAt(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
-		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main", Graph: graph,
-		LLM: pkgllm.RunnerFunc(func(_ context.Context, request pkgllm.Request) (pkgllm.Result, error) {
-			identity := pkgllm.Identity{Provider: "test", Model: "test"}
-			if request.Purpose == pkgllm.PurposePreflight {
-				return pkgllm.Result{Text: `{"findings":[]}`, Identity: identity}, nil
-			}
-			return pkgllm.Result{Text: "An identity captured for the project record.", Identity: identity}, nil
-		}),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: &runtimeAccessResolver{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs})
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := sdd.RequestIdentity{Subject: "christopher"}
-	return application, identity, openBinding(t, sessions, identity.Subject, "identity-write"), dir
-}
-
-func loadEntryByID(t *testing.T, dir, id string) *model.Entry {
-	t.Helper()
-	rel, err := model.IDToRelPath(id)
-	if err != nil {
-		t.Fatalf("IDToRelPath(%s): %v", id, err)
-	}
-	path := filepath.Join(dir, filepath.FromSlash(rel))
-	var data []byte
-	for attempt := 0; attempt < 100; attempt++ {
-		data, err = os.ReadFile(path)
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		t.Fatalf("reading persisted entry %s at %s: %v", id, path, err)
-	}
-	// ParseEntry derives type/layer/time from the filename, so hand it the full
-	// ID (the on-disk basename is DD-HHmmss-… under YYYY/MM).
-	e, err := model.ParseEntry(id+".md", string(data))
-	if err != nil {
-		t.Fatalf("parsing persisted entry %s: %v", id, err)
-	}
-	return e
-}
-
 func TestCreateEntry_ActorPersistsWithCanonicalAndAliases(t *testing.T) {
-	app, identity, binding, dir := newIdentityWriteApp(t)
-	created, err := app.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	f := newWriteFixture(t)
+	draft := f.identifiedDraft(sdd.EntryDraft{
 		Kind: "actor", Layer: "process", Confidence: "high",
 		Body:      "Christopher is CEO of networkteam with a full-stack background.",
 		Canonical: "Christopher", Aliases: []string{"Chris", "CH"},
 	})
+	created, err := f.app.CreateEntry(t.Context(), f.identity, "example", f.binding, draft)
 	if err != nil || created.EntryID == "" {
 		t.Fatalf("actor CreateEntry = %+v, err %v", created, err)
 	}
-	e := loadEntryByID(t, dir, created.EntryID)
+	e := loadEntryByID(t, f.graphDir, created.EntryID)
 	if !e.IsActor() || e.Canonical != "Christopher" {
 		t.Fatalf("persisted entry is not an actor with canonical Christopher: kind=%s canonical=%q", e.Kind, e.Canonical)
 	}
@@ -103,39 +27,29 @@ func TestCreateEntry_ActorPersistsWithCanonicalAndAliases(t *testing.T) {
 }
 
 func TestCreateEntry_RolePassesValidationWithBoundActor(t *testing.T) {
-	// A role's actor field is model-required (validateRoleFrontmatter rejects an
-	// empty one — see the ValidationError test below), so a successful write with
-	// Actor set proves the role-linkage wiring carried it onto the entry: had the
-	// draft-to-entry wiring dropped it, validation would fail the same way. The
-	// resolve-or-block check on the bound actor is the engine assemble gate,
-	// covered in the engine tests; here the actor need not pre-exist.
-	app, identity, binding, _ := newIdentityWriteApp(t)
-	role, err := app.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	f := newWriteFixture(t)
+	actorDraft := f.identifiedDraft(sdd.EntryDraft{Kind: "actor", Layer: "process", Confidence: "high", Canonical: "Christopher", Body: "Christopher participates in this project."})
+	actor, err := f.app.CreateEntry(t.Context(), f.identity, "example", f.binding, actorDraft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := f.identifiedDraft(sdd.EntryDraft{
 		Kind: "role", Layer: "process", Confidence: "high",
 		Body: "Christopher holds the strategic and conceptual calls on this project.", Actor: "Christopher",
+		Refs: []sdd.EntryRef{{ID: actor.EntryID, Kind: "grounded-in"}},
 	})
+	role, err := f.app.CreateEntry(t.Context(), f.identity, "example", f.binding, draft)
 	if err != nil || role.EntryID == "" {
 		t.Fatalf("role CreateEntry with a bound actor should pass validation and write, got %+v, err %v", role, err)
 	}
 }
 
 func TestCreateEntry_RoleMissingActorReturnsActionableValidationError(t *testing.T) {
-	app, identity, binding, _ := newIdentityWriteApp(t)
-	_, err := app.CreateEntry(t.Context(), identity, "example", binding, sdd.EntryDraft{
+	f := newWriteFixture(t)
+	draft := f.identifiedDraft(sdd.EntryDraft{
 		Kind: "role", Layer: "process", Confidence: "high",
 		Body: "A role with no bound actor.",
 	})
-	var verr *sdd.ValidationError
-	if !errors.As(err, &verr) {
-		t.Fatalf("expected *ValidationError, got %v", err)
-	}
-	named := false
-	for _, w := range verr.Warnings {
-		if w.Field == "actor" {
-			named = true
-		}
-	}
-	if !named {
-		t.Fatalf("ValidationError should name the missing actor field, got %+v", verr.Warnings)
-	}
+	_, err := f.app.CreateEntry(t.Context(), f.identity, "example", f.binding, draft)
+	validationErrorMentions(t, err, "actor")
 }

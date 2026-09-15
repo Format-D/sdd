@@ -2,6 +2,8 @@ package application_test
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,11 +26,12 @@ type collectFixture struct {
 	blobs       *localadapter.FilesystemStagedBlobStore
 	sessionsDir string
 	now         time.Time
+	staged      map[sdd.SessionID]string
 }
 
 const collectSubject = "local"
 
-func newCollectFixture(t *testing.T) collectFixture {
+func newCollectFixture(t *testing.T, configure ...func(*sdd.ApplicationOptions)) collectFixture {
 	t.Helper()
 	root := t.TempDir()
 	sessionsDir := filepath.Join(root, "sessions")
@@ -56,13 +59,17 @@ func newCollectFixture(t *testing.T) collectFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := sdd.NewApplication(sdd.ApplicationOptions{Access: &runtimeAccessResolver{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs, Clock: sdd.ClockFunc(func() time.Time { return now })})
+	options := sdd.ApplicationOptions{Access: &runtimeAccessResolver{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs, Clock: sdd.ClockFunc(func() time.Time { return now })}
+	for _, configure := range configure {
+		configure(&options)
+	}
+	app, err := sdd.NewApplication(options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return collectFixture{
 		app: app, sessions: sessions, blobs: blobs, sessionsDir: sessionsDir, now: now,
-		project: "local", identity: sdd.RequestIdentity{Subject: collectSubject},
+		staged: map[sdd.SessionID]string{}, project: "local", identity: sdd.RequestIdentity{Subject: collectSubject},
 	}
 }
 
@@ -88,7 +95,11 @@ func (f collectFixture) writeSession(t *testing.T, id sdd.SessionID, ended time.
 	ending := metadata
 	ending.Attachment = nil
 	ending.Ended = &sdd.SessionEnd{Act: act, EndedAt: ended}
-	if _, err := f.sessions.Append(t.Context(), id, created.Version, sdd.SessionAppend{Metadata: &ending}); err != nil {
+	payload, err := json.Marshal(ending.Ended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.sessions.Append(t.Context(), id, created.Version, sdd.SessionAppend{Metadata: &ending, Events: []sdd.StoredEvent{{CodecVersion: sdd.SessionCodecVersion, Code: sdd.SessionEndedEventCode, Payload: payload}}}); err != nil {
 		t.Fatalf("ending %s: %v", id, err)
 	}
 }
@@ -96,9 +107,11 @@ func (f collectFixture) writeSession(t *testing.T, id sdd.SessionID, ended time.
 func (f collectFixture) stage(t *testing.T, id sdd.SessionID) {
 	t.Helper()
 	owner := sdd.SessionRef{Subject: collectSubject, Session: id}
-	if _, err := f.blobs.Stage(t.Context(), owner, "evidence.md", strings.NewReader("evidence")); err != nil {
+	blob, err := f.blobs.Stage(t.Context(), owner, "evidence.md", strings.NewReader("evidence"))
+	if err != nil {
 		t.Fatalf("Stage(%s): %v", id, err)
 	}
+	f.staged[id] = blob.ID
 }
 
 func (f collectFixture) collect(t *testing.T, retention time.Duration) sdd.CollectSessionsResult {
@@ -126,15 +139,18 @@ func (f collectFixture) listedIDs(t *testing.T) []string {
 	return ids
 }
 
+// stagedIDs reports which known fixture resources remain readable.
 func (f collectFixture) stagedIDs(t *testing.T) []string {
 	t.Helper()
-	page, err := f.blobs.StagedSessions(t.Context(), sdd.SessionRef{}, 0)
-	if err != nil {
-		t.Fatalf("StagedSessions: %v", err)
-	}
-	ids := make([]string, 0, len(page.Sessions))
-	for _, ref := range page.Sessions {
-		ids = append(ids, string(ref.Session))
+	var ids []string
+	for id, blob := range f.staged {
+		reader, err := f.blobs.Open(t.Context(), sdd.SessionRef{Subject: collectSubject, Session: id}, blob)
+		if err == nil {
+			ids = append(ids, string(id))
+			if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	slices.Sort(ids)
 	return ids
@@ -170,39 +186,13 @@ func TestCollectRemovesOnlyEndedSessionsPastRetention(t *testing.T) {
 	}
 
 	// The removed session's blobs go with it; the survivors keep theirs.
-	if _, err := f.blobs.Stat(t.Context(), sdd.SessionRef{Subject: collectSubject, Session: "s_old"}, ""); err == nil {
-		t.Fatal("expected the removed session's staged blobs to be gone")
-	}
 	if kept := f.stagedIDs(t); !slices.Equal(kept, []string{"s_open", "s_recent"}) {
 		t.Fatalf("staged owners = %v, want only the surviving sessions", kept)
 	}
 }
 
-// TestCollectRemovesOrphanedStagedBlobs covers the self-healing half: once a
-// session's log is gone nothing points at its blob directory, so enumeration is
-// the only way a previously interrupted removal ever finishes.
-func TestCollectRemovesOrphanedStagedBlobs(t *testing.T) {
-	f := newCollectFixture(t)
-	f.writeSession(t, "s_live", time.Time{}, "")
-	f.stage(t, "s_live")
-	f.stage(t, "s_vanished")
-
-	result := f.collect(t, time.Hour)
-
-	var removed []string
-	for _, owner := range result.RemovedStaged {
-		removed = append(removed, string(owner.Session))
-	}
-	if !slices.Equal(removed, []string{"s_vanished"}) {
-		t.Fatalf("removed owners = %v, want only the orphan", removed)
-	}
-	if owners := f.stagedIDs(t); !slices.Equal(owners, []string{"s_live"}) {
-		t.Fatalf("remaining owners = %+v, want the live session's", owners)
-	}
-}
-
 // TestCollectPagesToConvergence pins the bounded shape: one pass processes a
-// page of each store and names where it stopped, repeating until Next is empty
+// page of sessions and names where it stopped, repeating until Next is empty
 // removes everything due, and a session the pass keeps never starves the pages
 // after it.
 func TestCollectPagesToConvergence(t *testing.T) {
@@ -213,7 +203,6 @@ func TestCollectPagesToConvergence(t *testing.T) {
 	}
 	f.writeSession(t, "s_live", time.Time{}, "")
 	f.stage(t, "s_live")
-	f.stage(t, "s_orphan")
 
 	var removed []string
 	passes := 0
@@ -249,14 +238,14 @@ func TestCollectPagesToConvergence(t *testing.T) {
 		t.Fatalf("remaining sessions = %v, want only the live one", got)
 	}
 	if got := f.stagedIDs(t); !slices.Equal(got, []string{"s_live"}) {
-		t.Fatalf("remaining staged = %v, want only the live session's (orphan collected)", got)
+		t.Fatalf("remaining staged = %v, want only the live session's", got)
 	}
 }
 
-// TestCollectIsIdempotentAndConcurrencySafe pins the property that replaces all
+// TestCollectIsIdempotent pins the property that replaces all
 // coordination: the target set is recomputed each run, so a repeat finds nothing
 // to do and never errors on work already done.
-func TestCollectIsIdempotentAndConcurrencySafe(t *testing.T) {
+func TestCollectIsIdempotent(t *testing.T) {
 	f := newCollectFixture(t)
 	f.writeSession(t, "s_old", f.now.Add(-30*24*time.Hour), sdd.SessionConcluded)
 	f.stage(t, "s_old")
@@ -291,5 +280,102 @@ func TestCollectLeavesUnreadableSessionsAlone(t *testing.T) {
 	}
 	if string(after) != corrupt {
 		t.Fatalf("the unreadable log was modified: %q", after)
+	}
+}
+
+type failingResourceDeletion struct {
+	sdd.StagedBlobStore
+	err error
+}
+
+func (s *failingResourceDeletion) DeleteStaged(ctx context.Context, ref sdd.SessionRef) error {
+	if s.err != nil {
+		return s.err
+	}
+	return s.StagedBlobStore.DeleteStaged(ctx, ref)
+}
+
+type failingSessionDeletion struct {
+	sdd.SessionStore
+	err error
+}
+
+func (s *failingSessionDeletion) Delete(ctx context.Context, id sdd.SessionID) error {
+	if s.err != nil {
+		return s.err
+	}
+	return s.SessionStore.Delete(ctx, id)
+}
+
+func TestCollectRetriesResourceAndSessionDeletion(t *testing.T) {
+	for _, failure := range []string{"resource deletion", "session deletion"} {
+		t.Run(failure, func(t *testing.T) {
+			injected := errors.New("injected cleanup failure")
+			var resources *failingResourceDeletion
+			var sessions *failingSessionDeletion
+			f := newCollectFixture(t, func(options *sdd.ApplicationOptions) {
+				resources = &failingResourceDeletion{StagedBlobStore: options.StagedBlobs}
+				sessions = &failingSessionDeletion{SessionStore: options.Sessions}
+				options.StagedBlobs, options.Sessions = resources, sessions
+			})
+			f.writeSession(t, "s_old", f.now.Add(-30*24*time.Hour), sdd.SessionConcluded)
+			f.stage(t, "s_old")
+			if failure == "resource deletion" {
+				resources.err = injected
+			} else {
+				sessions.err = injected
+			}
+
+			_, err := f.app.CollectSessions(t.Context(), sdd.CollectSessionsCmd{Retention: time.Hour})
+			if !errors.Is(err, injected) {
+				t.Fatalf("CollectSessions error = %v", err)
+			}
+			if got := f.listedIDs(t); !slices.Equal(got, []string{"s_old"}) {
+				t.Fatalf("session lost after cleanup failure: %v", got)
+			}
+			if got := f.stagedIDs(t); (len(got) == 1) != (failure == "resource deletion") {
+				t.Fatalf("remaining resources = %v after %s", got, failure)
+			}
+
+			resources.err, sessions.err = nil, nil
+			result := f.collect(t, time.Hour)
+			if !slices.Equal(result.RemovedSessions, []sdd.SessionID{"s_old"}) {
+				t.Fatalf("retry removed %v", result.RemovedSessions)
+			}
+			if got := f.stagedIDs(t); len(got) != 0 {
+				t.Fatalf("resources remain after retry: %v", got)
+			}
+		})
+	}
+}
+
+func TestCollectDoesNotExecutePendingWrites(t *testing.T) {
+	f := newCollectFixture(t)
+	f.writeSession(t, "s_ended", f.now.Add(-30*24*time.Hour), sdd.SessionAbandoned)
+	f.writeSession(t, "s_open", time.Time{}, "")
+	for _, id := range []sdd.SessionID{"s_ended", "s_open"} {
+		stored, err := f.sessions.Load(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.sessions.Append(t.Context(), id, stored.Version, sdd.SessionAppend{Events: []sdd.StoredEvent{{CodecVersion: sdd.SessionCodecVersion, Code: "mutation_intent", Payload: json.RawMessage(`{"legacy":"unroutable"}`)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := f.sessions.Load(t.Context(), "s_open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := f.collect(t, time.Hour)
+	if !slices.Equal(result.RemovedSessions, []sdd.SessionID{"s_ended"}) {
+		t.Fatalf("removed = %v", result.RemovedSessions)
+	}
+	after, err := f.sessions.Load(t.Context(), "s_open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Version != before.Version {
+		t.Fatalf("collector appended to pending open session: %d -> %d", before.Version, after.Version)
 	}
 }

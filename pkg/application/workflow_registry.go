@@ -1,7 +1,6 @@
 package application
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -244,13 +243,29 @@ func (w *WorkflowSession) registerWorkflowQueries(registry *engine.Registry) err
 }
 
 func (w *WorkflowSession) registerWorkflowWrites(registry *engine.Registry) error {
+	if err := registry.RegisterPredicate(engine.Predicate{
+		Doc: engine.FuncDoc{Name: "capturePreflightCurrent", Doc: "The recorded preflight covers the current draft, staged attachments and target.", Reads: captureDraftFields},
+		Fn:  w.capturePreflightCurrent,
+	}); err != nil {
+		return err
+	}
+	if err := registry.RegisterCommand(engine.Command{
+		Doc: engine.FuncDoc{Name: "preflightEntry", Doc: "Checks the current capture draft before publication and records its findings.",
+			Reads: captureDraftFields, Writes: []string{"findings", "resolvedCaptureBranch", "preflightOverride"}},
+		GraphIndependent: true,
+		Fn:               w.runWorkflowPreflight,
+	}); err != nil {
+		return err
+	}
 	if err := registry.RegisterCommand(engine.Command{
 		Doc: engine.FuncDoc{
-			Name: "newEntry", Doc: "Creates the entry from the capture state fields (pre-flight inside; staged attachments materialized from handles; a recorded override skips pre-flight, durably logged).",
+			Name: "newEntry", Doc: "Publishes the recorded entry identity from accepted capture state and immutable staged references.",
 			Reads: []string{"body", "entryKind", "layer", "refs", "topics", "index", "confidence", "intent", "attachments", "participants", "supersedes", "closes", "canonical", "aliases", "roleActor", "involvement", "focusActors", "focusWhen", "preflightOverride"}, Writes: []string{"resolvedCaptureBranch", "entryId", "findings"},
 		},
-		MutatesGraph: true,
-		Fn:           w.runWorkflowNewEntry,
+		MutatesGraph:     true,
+		GraphIndependent: true,
+		Prepare:          w.prepareWorkflowNewEntry,
+		Fn:               w.runWorkflowNewEntry,
 	}); err != nil {
 		return err
 	}
@@ -275,7 +290,7 @@ func (w *WorkflowSession) registerWorkflowWrites(registry *engine.Registry) erro
 			if !ok {
 				return fmt.Errorf("replaceSummary: correctedSummary is not set")
 			}
-			target, fromBinding := w.effectiveTarget(ctx.Store)
+			target, fromBinding := w.effectiveTargetFor(w.instanceProject(ctx.Instance), ctx.Store)
 			if err := w.authorizeTarget(target.Project, AccessWrite); err != nil {
 				return err
 			}
@@ -299,7 +314,7 @@ func (w *WorkflowSession) registerWorkflowWIP(registry *engine.Registry) error {
 				return fmt.Errorf("wipStart: anchor is not set")
 			}
 			description, _ := workflowStoreString(ctx.Store, "wipDescription")
-			target, err := w.wipTarget(ctx.Store)
+			target, err := w.wipTarget(ctx)
 			if err != nil {
 				return err
 			}
@@ -321,7 +336,7 @@ func (w *WorkflowSession) registerWorkflowWIP(registry *engine.Registry) error {
 			if !ok {
 				return fmt.Errorf("wipDone: wipMarker is not set")
 			}
-			target, err := w.wipTarget(ctx.Store)
+			target, err := w.wipTarget(ctx)
 			if err != nil {
 				return err
 			}
@@ -343,7 +358,7 @@ func (w *WorkflowSession) registerWorkflowWIP(registry *engine.Registry) error {
 			if !ok {
 				return fmt.Errorf("wipRemove: staleMarker is not set")
 			}
-			project := w.projectFor(ctx.Store)
+			project := w.instanceProject(ctx.Instance)
 			if err := w.authorizeTarget(project, AccessWrite); err != nil {
 				return err
 			}
@@ -373,7 +388,7 @@ func (w *WorkflowSession) runWorkflowWritingGuide(ctx *engine.Context) error {
 			return fmt.Errorf("writingGuide: %s is not set", field)
 		}
 	}
-	findings, err := w.app.WritingGuideCheck(w.ctx, w.identity, w.projectFor(ctx.Store), w.draftFromStore(ctx.Store))
+	findings, err := w.app.WritingGuideCheck(w.ctx, w.identity, w.instanceProject(ctx.Instance), w.draftFromStore(ctx.Store))
 	if err != nil {
 		return fmt.Errorf("writingGuide: %w", err)
 	}
@@ -387,31 +402,6 @@ func (w *WorkflowSession) runWorkflowWritingGuide(ctx *engine.Context) error {
 	return nil
 }
 
-// reportFieldForEntryField maps an entry-model field name to the capture
-// store field the agent reports it under, so a served finding names the
-// field the agent can actually fix. Inverse of draftFromStore's naming;
-// fields absent here share their name on both sides.
-var reportFieldForEntryField = func() func(string) string {
-	names := map[string]string{
-		"content": "body",
-		"kind":    "entryKind",
-		"actor":   "roleActor",
-		"actors":  "focusActors",
-		"when":    "focusWhen",
-	}
-	return func(field string) string {
-		if mapped, ok := names[field]; ok {
-			return mapped
-		}
-		return field
-	}
-}()
-
-// draftFromStore reads the capture state fields into an EntryDraft — the one
-// store-to-draft mapping, shared by the write op, the writing-guide op, and
-// the draftValidates predicate so no surface restates the field set. Write-
-// specific concerns (mutation target, staged-handle remap, pre-flight
-// override) stay with the write op.
 func (w *WorkflowSession) draftFromStore(store *engine.Store) EntryDraft {
 	draft := EntryDraft{
 		Topics: workflowStoreStrings(store, "topics"),
@@ -464,91 +454,47 @@ func (w *WorkflowSession) draftFromStore(store *engine.Store) EntryDraft {
 }
 
 func (w *WorkflowSession) runWorkflowNewEntry(ctx *engine.Context) error {
-	for _, field := range []string{"entryKind", "layer", "body"} {
-		if _, ok := workflowStoreString(ctx.Store, field); !ok {
-			return fmt.Errorf("newEntry: %s is not set", field)
-		}
+	if ctx.Intent == nil {
+		return fmt.Errorf("newEntry requires a recorded invocation")
 	}
-	target, fromBinding, resolvedDefault, err := w.concreteEffectiveTarget(ctx.Store)
-	if err != nil {
+	target := MutationTarget{Project: ProjectID(ctx.Intent.Values["project"]), Branch: ctx.Intent.Values["branch"]}
+	if err := w.authorizeTarget(target.Project, AccessWrite); err != nil {
 		return err
 	}
 	draft := w.draftFromStore(ctx.Store)
 	draft.Target = target
-	for index, handle := range draft.AttachmentHandles {
-		if blobID, ok := w.staged[handle]; ok {
-			draft.AttachmentHandles[index] = blobID
-		}
+	draft.EntryID = ctx.Intent.Values["entryId"]
+	draft.Publication = PublicationKey{Session: w.ID(), Sequence: ctx.Intent.Ref, Discriminator: "newEntry"}
+	staged, err := w.stagedAt(ctx.Intent.Ref)
+	if err != nil {
+		return err
+	}
+	if err := captureAttachments(&draft, staged); err != nil {
+		return err
 	}
 	if override, ok := ctx.Store.Get("preflightOverride"); ok {
 		draft.SkipPreflight, _ = override.(bool)
 	}
-	if err := w.authorizeTarget(target.Project, AccessWrite); err != nil {
-		return err
-	}
 	result, err := w.app.CreateEntry(w.ctx, w.identity, target.Project, w.binding, draft)
-	err = w.withSessionBindingTargetError(err, fromBinding)
-	// A structural validation failure re-serves as high findings instead of
-	// wedging the instance: the write step's `otherwise` routes to
-	// reviseOrOverride, whose revise returns to assemble to fix the named rule
-	// and field. No write happened, so the binding is left untouched.
-	var validationErr *ValidationError
-	if errors.As(err, &validationErr) {
-		findings := make([]query.Finding, 0, len(validationErr.Warnings))
-		for _, warning := range validationErr.Warnings {
-			observation := warning.Message
-			if warning.Field != "" {
-				observation = fmt.Sprintf("%s (field: %s)", warning.Message, reportFieldForEntryField(warning.Field))
-			}
-			findings = append(findings, query.Finding{
-				Severity:    query.SeverityHigh,
-				Category:    "validation",
-				Observation: observation,
-			})
-		}
-		if writeErr := ctx.Store.WriteEngine("findings", findings); writeErr != nil {
-			return fmt.Errorf("newEntry: %w", writeErr)
-		}
-		return nil
-	}
-	if err == nil {
-		w.binding = result.Binding
-	}
-	findings := make([]query.Finding, 0, len(result.Findings))
-	for _, finding := range result.Findings {
-		findings = append(findings, query.Finding{Severity: query.Severity(finding.Severity), Category: finding.Category, Observation: finding.Observation})
-	}
-	if writeErr := ctx.Store.WriteEngine("findings", findings); writeErr != nil {
-		return fmt.Errorf("newEntry: %w", writeErr)
-	}
 	if err != nil {
 		return fmt.Errorf("newEntry: %w", err)
 	}
-	for _, finding := range findings {
-		if finding.Severity == query.SeverityHigh {
-			return nil
-		}
-	}
-	if resolvedDefault {
-		if err := ctx.Store.WriteEngine("resolvedCaptureBranch", target.Branch); err != nil {
-			return fmt.Errorf("newEntry: pinning default capture branch: %w", err)
-		}
-	}
+	w.binding = result.Binding
 	if err := ctx.Store.WriteEngine("entryId", result.EntryID); err != nil {
-		return fmt.Errorf("newEntry: %w", err)
+		return err
 	}
 	w.session.LogRead("newEntry", []string{result.EntryID}, nil)
-	return nil
+	return w.session.SinkErr()
 }
 
 // wipTarget is the WIP marker's authority: the instance's project on the
 // explicit baseBranch its state names.
-func (w *WorkflowSession) wipTarget(store *engine.Store) (MutationTarget, error) {
-	branch, _ := workflowStoreString(store, "baseBranch")
+func (w *WorkflowSession) wipTarget(ctx *engine.Context) (MutationTarget, error) {
+	branch, _ := workflowStoreString(ctx.Store, "baseBranch")
 	if branch == "" {
 		return MutationTarget{}, fmt.Errorf("WIP write requires an explicit baseBranch")
 	}
-	target := MutationTarget{Project: w.projectFor(store), Branch: branch}
+	target := MutationTarget{Project: w.instanceProject(ctx.Instance), Branch: branch}
 	if err := w.authorizeTarget(target.Project, AccessWrite); err != nil {
 		return MutationTarget{}, err
 	}
@@ -557,7 +503,7 @@ func (w *WorkflowSession) wipTarget(store *engine.Store) (MutationTarget, error)
 
 // workflowBranchFields is the application-owned registry of procedure state
 // fields carrying branch authority, in precedence order: capture state names
-// captureBranch, the write gate pins resolvedCaptureBranch, implementation
+// captureBranch, published entries use resolvedCaptureBranch, implementation
 // state names workBranch. A procedure that introduces another branch-bearing
 // field must register it here, or its reads and writes silently fall back to
 // the session binding.
@@ -571,8 +517,16 @@ var workflowBranchFields = [...]string{"captureBranch", "resolvedCaptureBranch",
 // the target project's configured default_branch. No cwd or other ambient
 // state participates, and the engine stays unaware of what these fields mean.
 func (w *WorkflowSession) effectiveTarget(store *engine.Store) (MutationTarget, bool) {
-	project := w.projectFor(store)
+	return w.effectiveTargetFor(w.projectFor(store), store)
+}
+
+func (w *WorkflowSession) effectiveTargetFor(project ProjectID, store *engine.Store) (MutationTarget, bool) {
+	entryID, _ := workflowStoreString(store, "entryId")
 	for _, field := range workflowBranchFields {
+		// A preflight result does not pin the branch before publication.
+		if field == "resolvedCaptureBranch" && entryID == "" {
+			continue
+		}
 		if branch, _ := workflowStoreString(store, field); branch != "" {
 			return MutationTarget{Project: project, Branch: branch}, false
 		}

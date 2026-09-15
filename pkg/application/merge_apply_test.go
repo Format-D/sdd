@@ -13,7 +13,6 @@ import (
 	"github.com/networkteam/sdd/internal/model"
 	sdd "github.com/networkteam/sdd/pkg/application"
 	pkgllm "github.com/networkteam/sdd/pkg/llm"
-	localadapter "github.com/networkteam/sdd/pkg/local"
 )
 
 // conflictInjectingStore forces the leading `remaining` Apply calls to return
@@ -50,7 +49,7 @@ func TestApplyPreparedRetriesRevisionConflictThenMerges(t *testing.T) {
 	var injector *conflictInjectingStore
 	// Two lost races followed by success proves the engine-internal retry lands
 	// within its three-attempt bound, invisible to the caller.
-	application, sessions, blobs, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		injector = &conflictInjectingStore{GraphStore: store, remaining: 2}
 		return injector
 	}, nil)
@@ -60,9 +59,6 @@ func TestApplyPreparedRetriesRevisionConflictThenMerges(t *testing.T) {
 	result, err := application.ApplyPrepared(t.Context(), identity, "example", binding, prepared)
 	if err != nil || result.Apply.State != sdd.MutationApplied {
 		t.Fatalf("bounded retry apply = %+v, %v", result, err)
-	}
-	if blobs.released != 1 {
-		t.Fatalf("applied retry released blobs %d times, want 1", blobs.released)
 	}
 	pending, err := application.ListRecoveries(t.Context(), identity, "example", false)
 	if err != nil || len(pending.Items) != 0 {
@@ -79,7 +75,7 @@ func TestApplyPreparedRetriesRevisionConflictThenMerges(t *testing.T) {
 func TestApplyPreparedExhaustedConflictFailsTypedNeverRecovery(t *testing.T) {
 	// Exactly three injected conflicts exhaust the cap: paired with the two-loss
 	// merge case (which lands), this pins the retry bound at exactly three.
-	application, sessions, blobs, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		return &conflictInjectingStore{GraphStore: store, remaining: 3}
 	}, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
@@ -93,10 +89,7 @@ func TestApplyPreparedExhaustedConflictFailsTypedNeverRecovery(t *testing.T) {
 		t.Fatalf("exhausted conflict message = %q, want a re-try invitation", err.Error())
 	}
 	// A revision conflict never files a recovery: the contended intent is
-	// auto-discarded, releasing its retained blobs.
-	if blobs.released != 1 {
-		t.Fatalf("contended discard released blobs %d times, want 1", blobs.released)
-	}
+	// auto-discarded.
 	pending, err := application.ListRecoveries(t.Context(), identity, "example", false)
 	if err != nil || len(pending.Items) != 0 {
 		t.Fatalf("exhausted conflict actionable recovery = %+v, %v; want none", pending, err)
@@ -108,7 +101,7 @@ func TestApplyPreparedExhaustedConflictFailsTypedNeverRecovery(t *testing.T) {
 }
 
 func TestApplyPreparedGenuineWIPMarkerPathCollisionFailsTyped(t *testing.T) {
-	application, sessions, _, graph := newDurableApplication(t, time.Now, nil, nil)
+	application, sessions, graph := newDurableApplication(t, time.Now, nil, nil)
 	identity := sdd.RequestIdentity{Subject: "christopher"}
 	anchorPath := "2026/07/13-055400-s-tac-anc.md"
 	anchorID, err := model.RelPathToID(anchorPath)
@@ -145,7 +138,7 @@ func TestApplyPreparedGenuineWIPMarkerPathCollisionFailsTyped(t *testing.T) {
 
 func TestReplaceSummaryMergesUnderRetry(t *testing.T) {
 	var injector *conflictInjectingStore
-	application, sessions, _, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
+	application, sessions, graph := newDurableApplication(t, time.Now, func(store sdd.GraphStore) sdd.GraphStore {
 		injector = &conflictInjectingStore{GraphStore: store}
 		return injector
 	}, nil)
@@ -209,32 +202,17 @@ func preparedWIP(t *testing.T, graph sdd.GraphStore, binding sdd.SessionBinding,
 }
 
 func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
-	graph, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "example", GraphDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sessions, err := localadapter.NewFilesystemSessionStoreAt(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	blobs, err := localadapter.NewFilesystemStagedBlobStoreAt(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	const captures = 2
 	var preflightCalls int64
 	entered := make(chan struct{}, captures)
 	release := make(chan struct{})
-	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
-		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main", Graph: graph,
-		LLM: pkgllm.RunnerFunc(func(_ context.Context, request pkgllm.Request) (pkgllm.Result, error) {
+	f := newWriteFixture(t, writeFixtureOptions{
+		Runner: pkgllm.RunnerFunc(func(_ context.Context, request pkgllm.Request) (pkgllm.Result, error) {
 			identity := pkgllm.Identity{Provider: "test", Model: "test"}
 			if request.Purpose == pkgllm.PurposePreflight {
 				atomic.AddInt64(&preflightCalls, 1)
 				// Artificially slow stage: block until both captures have
-				// pinned their prepare-time snapshot and entered pre-flight,
-				// so their applies genuinely interleave through the retry.
+				// entered preflight before either publication starts.
 				entered <- struct{}{}
 				<-release
 				return pkgllm.Result{Text: `{"findings":[]}`, Identity: identity}, nil
@@ -242,18 +220,9 @@ func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
 			return pkgllm.Result{Text: "Interleaved capture summary.", Identity: identity}, nil
 		}),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: &runtimeAccessResolver{runtime: runtime}, Sessions: sessions, StagedBlobs: blobs})
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := sdd.RequestIdentity{Subject: "christopher"}
-
 	bindings := make([]sdd.SessionBinding, captures)
 	for i := range bindings {
-		bindings[i] = openBinding(t, sessions, identity.Subject, sdd.SessionID(fmt.Sprintf("capture-%d", i)))
+		bindings[i] = openBinding(t, f.sessions, f.identity.Subject, sdd.SessionID(fmt.Sprintf("capture-%d", i)))
 	}
 
 	type outcome struct {
@@ -263,9 +232,10 @@ func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
 	results := make(chan outcome, captures)
 	for i := range bindings {
 		go func(n int) {
-			created, err := application.CreateEntry(t.Context(), identity, "example", bindings[n], sdd.EntryDraft{
+			draft := identifiedCaptureDraft(bindings[n], uint64(n+1), sdd.EntryDraft{
 				Kind: "gap", Layer: "tactical", Body: fmt.Sprintf("Interleaved capture body %d.", n), Confidence: "high",
 			})
+			created, err := preflightAndCreateEntry(t, f.app, f.identity, bindings[n], draft)
 			results <- outcome{id: created.EntryID, err: err}
 		}(i)
 	}
@@ -288,7 +258,7 @@ func TestInterleavedCapturesBothLandWithoutRecovery(t *testing.T) {
 	if atomic.LoadInt64(&preflightCalls) != captures {
 		t.Fatalf("pre-flight ran %d times, want %d (once per capture)", preflightCalls, captures)
 	}
-	recoveries, err := application.ListRecoveries(t.Context(), identity, "example", false)
+	recoveries, err := f.app.ListRecoveries(t.Context(), f.identity, "example", false)
 	if err != nil || len(recoveries.Items) != 0 {
 		t.Fatalf("interleaved capture recovery projection = %+v, %v; want none", recoveries, err)
 	}

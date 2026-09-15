@@ -12,10 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/networkteam/sdd/internal/finders"
-	"github.com/networkteam/sdd/internal/llmops"
 	"github.com/networkteam/sdd/internal/model"
-	"github.com/networkteam/sdd/internal/query"
 	"github.com/networkteam/sdd/pkg/application/types"
 )
 
@@ -37,6 +34,8 @@ type FactIndex struct {
 }
 
 type EntryDraft struct {
+	EntryID           string
+	Publication       PublicationKey
 	Target            MutationTarget
 	Kind              string
 	Layer             string
@@ -50,6 +49,7 @@ type EntryDraft struct {
 	Topics            []string
 	Index             *FactIndex
 	AttachmentHandles []string
+	Attachments       []StagedAttachment
 	// Canonical and Aliases carry a kind: actor signal's identity; Actor carries
 	// a kind: role decision's bound actor canonical; Class carries a
 	// kind: procedure decision's execution role. Mirrors the CLI-side
@@ -72,6 +72,16 @@ type EntryDraft struct {
 	FocusWhen     *types.FocusWhen
 	Involvement   []types.Involvement
 	SkipPreflight bool
+}
+
+type StagedAttachment struct {
+	Filename string
+	BlobID   string
+}
+
+type PreflightEntryResult struct {
+	Target   MutationTarget
+	Findings []Finding
 }
 
 // ValidationError reports that model.ValidateEntry rejected a draft at the
@@ -145,165 +155,6 @@ func (a *Application) OpenStagedBlob(ctx context.Context, identity RequestIdenti
 	return a.blobs.Open(ctx, ref, blobID)
 }
 
-// CreateEntry runs SDD-owned validation and pre-flight, prepares canonical
-// document/blob facts, then enters the durable transition protocol.
-func (a *Application) CreateEntry(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, draft EntryDraft) (CreateEntryResult, error) {
-	principal, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
-	if err != nil {
-		return CreateEntryResult{}, err
-	}
-	target, err := resolveMutationTarget(runtime, draft.Target)
-	if err != nil {
-		return CreateEntryResult{}, err
-	}
-	targetSnapshot, err := snapshotMutationTarget(ctx, runtime, target)
-	if err != nil {
-		return CreateEntryResult{}, err
-	}
-	snapshot, err := a.snapshotWithDependencyPolicy(ctx, identity, runtime, targetSnapshot, false)
-	if err != nil {
-		return CreateEntryResult{}, err
-	}
-	kind := model.Kind(draft.Kind)
-	entryType, err := entryTypeForKind(kind)
-	if err != nil {
-		return CreateEntryResult{}, err
-	}
-	layer := draftLayer(draft.Layer)
-	suffix, err := model.RandomSuffix(3)
-	if err != nil {
-		return CreateEntryResult{}, err
-	}
-	id := model.GenerateIDAt(entryType, layer, suffix, a.now())
-	entry, assemblyFindings := entryFromDraft(draft, id, a.now())
-	if len(assemblyFindings) > 0 {
-		warnings := make([]types.Warning, 0, len(assemblyFindings))
-		for _, f := range assemblyFindings {
-			warnings = append(warnings, f.Warning())
-		}
-		return CreateEntryResult{}, &ValidationError{Warnings: warnings}
-	}
-	if len(entry.Participants) == 0 {
-		participant, err := a.participantFor(ctx, principal, runtime)
-		if err != nil {
-			return CreateEntryResult{}, err
-		}
-		if participant != "" {
-			entry.Participants = []string{participant}
-		}
-	}
-	// Attachment truth is established before the gate: staged handles resolve
-	// to filenames on the entry and {{attachments}} links resolve against the
-	// minted ID, so ValidateForWrite's link check sees what the entry actually
-	// carries (20260707-175502-s-prc-lgu).
-	owner := SessionRef{Subject: principal.Subject, Session: binding.SessionID}
-	var materializations []AttachmentMaterialization
-	for _, handle := range draft.AttachmentHandles {
-		blob, err := a.blobs.Stat(ctx, owner, handle)
-		if err != nil {
-			return CreateEntryResult{}, fmt.Errorf("attachment %q is not staged in this session: %w", handle, err)
-		}
-		attachDir, err := model.AttachDirRelPath(id)
-		if err != nil {
-			return CreateEntryResult{}, err
-		}
-		entry.Attachments = append(entry.Attachments, blob.Filename)
-		materializations = append(materializations, AttachmentMaterialization{
-			BlobID: blob.ID, Digest: blob.Digest, Size: blob.Size, SourceName: blob.Filename,
-			LogicalPath: filepath.ToSlash(filepath.Join(attachDir, blob.Filename)),
-		})
-	}
-	entry.Content = model.ResolveAttachmentLinks(entry.Content, id)
-	if entry.Refs, err = snapshot.graph.ResolveRefIDs(entry.Refs); err != nil {
-		return CreateEntryResult{}, fmt.Errorf("resolving refs: %w", err)
-	}
-	if entry.Closes, err = snapshot.graph.ResolveIDs(entry.Closes); err != nil {
-		return CreateEntryResult{}, fmt.Errorf("resolving closes: %w", err)
-	}
-	if entry.Supersedes, err = snapshot.graph.ResolveIDs(entry.Supersedes); err != nil {
-		return CreateEntryResult{}, fmt.Errorf("resolving supersedes: %w", err)
-	}
-	// The construction boundary is the write gate: stray per-kind fields
-	// surface as projection findings, and ValidateForWrite runs the full rule
-	// set including the capture-only rules the read path waives — so this
-	// surface enforces exactly what the CLI write path enforces.
-	construction, findings := model.ConstructFromEntry(entry)
-	validated, writeFindings := construction.ValidateForWrite(snapshot.graph)
-	findings = append(findings, writeFindings...)
-	if len(findings) > 0 {
-		warnings := make([]types.Warning, 0, len(findings))
-		for _, f := range findings {
-			warnings = append(warnings, f.Warning())
-		}
-		return CreateEntryResult{}, &ValidationError{Warnings: warnings}
-	}
-	entry = validated
-
-	result := CreateEntryResult{Project: runtime.options.Project, Binding: binding, EntryID: id}
-	if !draft.SkipPreflight {
-		registry, err := ProcedureRegistry()
-		if err != nil {
-			return result, fmt.Errorf("pre-flight: %w", err)
-		}
-		finder := finders.New(finders.Options{
-			PreflightRunner:   runtime.options.LLM,
-			ProcedureRegistry: registry,
-			Config: &model.PerRepoConfig{
-				Language:     runtime.options.Language,
-				Dependencies: runtime.options.Dependencies,
-			},
-		})
-		preflight, err := finder.Preflight(ctx, snapshot.graph, query.PreflightQuery{Entry: entry})
-		if err != nil {
-			return result, fmt.Errorf("pre-flight: %w", err)
-		}
-		for _, finding := range preflight.Findings {
-			result.Findings = append(result.Findings, Finding{Severity: string(finding.Severity), Category: finding.Category, Observation: finding.Observation})
-		}
-		for _, finding := range preflight.Findings {
-			if finding.Severity == query.SeverityHigh {
-				return result, nil
-			}
-		}
-	} else {
-		entry.Preflight = "skipped"
-	}
-	summary, err := llmops.Summarize(ctx, runtime.options.LLM, entry, snapshot.graph, runtime.options.Language)
-	if err != nil {
-		return result, fmt.Errorf("generating summary: %w", err)
-	}
-	entry.Summary = summary.Summary
-
-	logicalPath, err := model.IDToRelPath(id)
-	if err != nil {
-		return result, err
-	}
-	canonical := []byte(model.FormatFrontmatter(entry) + "\n" + entry.Content + "\n")
-	document, err := parseEntryDocument(filepath.ToSlash(logicalPath), canonical)
-	if err != nil {
-		return result, err
-	}
-	batch := MutationBatch{
-		ID: "entry-" + id, Changes: []DocumentChange{{LogicalPath: filepath.ToSlash(logicalPath), Document: &document, CanonicalBytes: canonical}},
-		Message: fmt.Sprintf("sdd: %s %s %s", entry.TypeLabel(), entry.LayerLabel(), entry.ShortContent(72)),
-	}
-	batch.Attachments = materializations
-	batch.Digest, err = MutationBatchDigest(batch)
-	if err != nil {
-		return result, err
-	}
-	transition, err := a.ApplyPrepared(ctx, identity, runtime.options.Project.ID, binding, PreparedTransition{
-		Version: PreparedTransitionVersion, Target: target, ExpectedGraphRevision: targetSnapshot.Revision(), Batch: batch,
-		Staged: owner, BlobIDs: append([]string(nil), draft.AttachmentHandles...),
-	})
-	result.Binding = transition.Binding
-	if err != nil {
-		return result, err
-	}
-	result.Summary = entry.Summary
-	return result, nil
-}
-
 func (a *Application) ReplaceSummary(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, target MutationTarget, entryID, summary string) (MutationResult, error) {
 	_, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
 	if err != nil {
@@ -332,7 +183,7 @@ func (a *Application) ReplaceSummary(ctx context.Context, identity RequestIdenti
 	if err != nil {
 		return MutationResult{}, err
 	}
-	document, err := parseEntryDocument(filepath.ToSlash(path), canonical)
+	document, err := ParseEntryDocument(filepath.ToSlash(path), canonical)
 	if err != nil {
 		return MutationResult{}, err
 	}

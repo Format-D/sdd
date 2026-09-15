@@ -287,6 +287,7 @@ This reference exists only on the bound work branch.
 	}
 	targetGraphs := map[string]sdd.GraphStore{"main": mainGraph, "work": workGraph}
 	rejectNextPreflight := false
+	preflightCalls := 0
 	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main", Graph: branchReadFixture{GraphStore: currentGraph, project: "example", targets: workflowBranchTargets{graphs: targetGraphs}},
 		Targets: workflowBranchTargets{graphs: targetGraphs},
@@ -300,6 +301,7 @@ This reference exists only on the bound work branch.
 			identity := pkgllm.Identity{Provider: "test", Model: "test"}
 			switch request.Purpose {
 			case pkgllm.PurposePreflight:
+				preflightCalls++
 				if rejectNextPreflight {
 					rejectNextPreflight = false
 					return pkgllm.Result{Text: `{"findings":[{"severity":"high","category":"retry-route","observation":"reject this first attempt"}]}`, Identity: identity}, nil
@@ -400,6 +402,7 @@ This reference exists only on the bound work branch.
 	if serve.Step != "reviseOrOverride" {
 		t.Fatalf("rejected default attempt step = %q, want reviseOrOverride", serve.Step)
 	}
+	previousPreflightCalls := preflightCalls
 	if err := retry.BindBranch(t.Context(), identity, "work", false); err != nil {
 		t.Fatal(err)
 	}
@@ -408,6 +411,9 @@ This reference exists only on the bound work branch.
 	})
 	if serve.Step != "verifySummary" {
 		t.Fatalf("bound retry step = %q, want verifySummary", serve.Step)
+	}
+	if preflightCalls != previousPreflightCalls+1 {
+		t.Fatalf("branch rebinding must obtain a fresh preflight, calls before=%d after=%d", previousPreflightCalls, preflightCalls)
 	}
 	serve = advanceWorkflow(t, retry, identity, serve.Instance, map[string]any{
 		"chooser": "verifySummary", "choice": "faithful", "fields": map[string]any{"fidelityNote": "faithful"},

@@ -101,7 +101,7 @@ func TestExternalCompositionCompilesAgainstPublicPorts(t *testing.T) {
 	if runtime.Project().ID != "example" {
 		t.Fatalf("project = %+v", runtime.Project())
 	}
-	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: accessResolver{runtime: runtime}, Sessions: newMemorySessionStore(), StagedBlobs: newMemoryStagedBlobStore(nil)})
+	application, err := sdd.NewApplication(sdd.ApplicationOptions{Access: accessResolver{runtime: runtime}, Sessions: newMemorySessionStore(), StagedBlobs: newMemoryStagedBlobStore()})
 	if err != nil {
 		t.Fatal(err)
 	}

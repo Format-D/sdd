@@ -1,16 +1,17 @@
-package main
+package cliapp
 
 import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/networkteam/sdd/internal/cliout"
 	"github.com/networkteam/sdd/internal/repos"
 	sdd "github.com/networkteam/sdd/pkg/application"
 	pkgllm "github.com/networkteam/sdd/pkg/llm"
@@ -40,11 +41,11 @@ func recoverCmd() *cli.Command {
 				return err
 			}
 			if cmd.Bool("history") {
-				renderRecoveryItems(list.Items)
+				renderRecoveryItems(cmd.Writer, list.Items)
 				return nil
 			}
 			if len(list.Items) == 0 {
-				fmt.Fprintln(os.Stdout, "No pending writes await recovery.")
+				fmt.Fprintln(cmd.Writer, "No pending writes await recovery.")
 				return nil
 			}
 			item, err := selectRecoveryItem(list.Items, cmd)
@@ -68,10 +69,10 @@ func recoverCmd() *cli.Command {
 			if verb == sdd.RecoveryBindTarget {
 				branch := strings.TrimSpace(cmd.String("branch"))
 				if branch == "" {
-					if !isTerminal(os.Stdin) {
+					if !cliout.IsTerminalReader(cmd.Reader) {
 						return fmt.Errorf("bind-target requires --branch in non-interactive mode")
 					}
-					branch, err = readRecoveryLine("Concrete target branch: ")
+					branch, err = readRecoveryLine(cmd.Reader, cmd.Writer, "Concrete target branch: ")
 					if err != nil {
 						return err
 					}
@@ -79,17 +80,17 @@ func recoverCmd() *cli.Command {
 				target = sdd.MutationTarget{Project: project, Branch: branch}
 			}
 			reason := strings.TrimSpace(cmd.String("reason"))
-			if reason == "" && isTerminal(os.Stdin) {
-				reason, err = readRecoveryLine("Audit reason: ")
+			if reason == "" && cliout.IsTerminalReader(cmd.Reader) {
+				reason, err = readRecoveryLine(cmd.Reader, cmd.Writer, "Audit reason: ")
 				if err != nil {
 					return err
 				}
 			}
 			if !cmd.Bool("yes") {
-				if !isTerminal(os.Stdin) {
+				if !cliout.IsTerminalReader(cmd.Reader) {
 					return fmt.Errorf("recovery requires explicit confirmation; pass --yes with --session, --mutation, and --verb")
 				}
-				confirmed, err := promptConfirmation(fmt.Sprintf("Run %s for %s on %s?", verb, item.MutationID, recoveryTargetLabel(item)))
+				confirmed, err := promptConfirmation(cmd, fmt.Sprintf("Run %s for %s on %s?", verb, item.MutationID, recoveryTargetLabel(item)))
 				if err != nil {
 					return err
 				}
@@ -103,7 +104,7 @@ func recoverCmd() *cli.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stdout, "Recovery recorded: %s · %s · %s\n", item.MutationID, verb, recoveryStateLabel(result.Item))
+			fmt.Fprintf(cmd.Writer, "Recovery recorded: %s · %s · %s\n", item.MutationID, verb, recoveryStateLabel(result.Item))
 			return nil
 		}),
 	}
@@ -149,7 +150,7 @@ func buildLocalStoreApplication(ctx context.Context, cmd *cli.Command) (*sdd.App
 	if err != nil {
 		return nil, "", sdd.RequestIdentity{}, err
 	}
-	targets, err := newLocalMutationTargets(project, filepath.Dir(sddDir))
+	targets, err := localadapter.NewRepositoryTargets(project, filepath.Dir(sddDir), locations.ConfigPath)
 	if err != nil {
 		return nil, "", sdd.RequestIdentity{}, err
 	}
@@ -181,15 +182,15 @@ func buildLocalStoreApplication(ctx context.Context, cmd *cli.Command) (*sdd.App
 	return application, project, identity, nil
 }
 
-func renderRecoveryItems(items []sdd.RecoveryItem) {
+func renderRecoveryItems(writer io.Writer, items []sdd.RecoveryItem) {
 	if len(items) == 0 {
-		fmt.Fprintln(os.Stdout, "No recovery history.")
+		fmt.Fprintln(writer, "No recovery history.")
 		return
 	}
 	for index, item := range items {
-		fmt.Fprintf(os.Stdout, "%d. %s · %s · %s · owner %s · session %s\n", index+1, item.MutationID, recoveryStateLabel(item), recoveryTargetLabel(item), item.OriginalSubject, item.Session)
+		fmt.Fprintf(writer, "%d. %s · %s · %s · owner %s · session %s\n", index+1, item.MutationID, recoveryStateLabel(item), recoveryTargetLabel(item), item.OriginalSubject, item.Session)
 		if item.LastEvidence != "" {
-			fmt.Fprintf(os.Stdout, "   evidence: %s\n", item.LastEvidence)
+			fmt.Fprintf(writer, "   evidence: %s\n", item.LastEvidence)
 		}
 	}
 }
@@ -221,11 +222,11 @@ func selectRecoveryItem(items []sdd.RecoveryItem, cmd *cli.Command) (sdd.Recover
 		}
 		return sdd.RecoveryItem{}, fmt.Errorf("pending mutation %s in session %s was not found", mutation, session)
 	}
-	if !isTerminal(os.Stdin) {
+	if !cliout.IsTerminalReader(cmd.Reader) {
 		return sdd.RecoveryItem{}, fmt.Errorf("multiple pending writes require --session and --mutation in non-interactive mode")
 	}
-	renderRecoveryItems(items)
-	choice, err := readRecoveryChoice("Select pending write: ", len(items))
+	renderRecoveryItems(cmd.Writer, items)
+	choice, err := readRecoveryChoice(cmd.Reader, cmd.Writer, "Select pending write: ", len(items))
 	if err != nil {
 		return sdd.RecoveryItem{}, err
 	}
@@ -236,14 +237,14 @@ func selectRecoveryVerb(item sdd.RecoveryItem, cmd *cli.Command) (sdd.RecoveryVe
 	if raw := strings.TrimSpace(cmd.String("verb")); raw != "" {
 		return parseRecoveryVerb(raw)
 	}
-	if !isTerminal(os.Stdin) {
+	if !cliout.IsTerminalReader(cmd.Reader) {
 		return "", fmt.Errorf("--verb is required in non-interactive mode")
 	}
 	verbs := recoveryVerbs(item)
 	for index, verb := range verbs {
-		fmt.Fprintf(os.Stdout, "%d. %s\n", index+1, verb)
+		fmt.Fprintf(cmd.Writer, "%d. %s\n", index+1, verb)
 	}
-	choice, err := readRecoveryChoice("Select recovery action: ", len(verbs))
+	choice, err := readRecoveryChoice(cmd.Reader, cmd.Writer, "Select recovery action: ", len(verbs))
 	if err != nil {
 		return "", err
 	}
@@ -290,8 +291,8 @@ func recoveryTargetLabel(item sdd.RecoveryItem) string {
 	return fmt.Sprintf("%s@%s", item.Target.Project, item.Target.Branch)
 }
 
-func readRecoveryChoice(prompt string, count int) (int, error) {
-	line, err := readRecoveryLine(prompt)
+func readRecoveryChoice(reader io.Reader, writer io.Writer, prompt string, count int) (int, error) {
+	line, err := readRecoveryLine(reader, writer, prompt)
 	if err != nil {
 		return 0, err
 	}
@@ -302,9 +303,9 @@ func readRecoveryChoice(prompt string, count int) (int, error) {
 	return choice, nil
 }
 
-func readRecoveryLine(prompt string) (string, error) {
-	fmt.Fprint(os.Stdout, prompt)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+func readRecoveryLine(reader io.Reader, writer io.Writer, prompt string) (string, error) {
+	fmt.Fprint(writer, prompt)
+	line, err := bufio.NewReader(reader).ReadString('\n')
 	if err != nil {
 		return "", err
 	}

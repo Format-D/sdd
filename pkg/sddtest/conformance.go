@@ -3,7 +3,9 @@ package sddtest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -142,12 +144,22 @@ func RunSessionStoreTests(t *testing.T, factory func(*testing.T) SessionStoreFix
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	next, err := fixture.Store.Append(t.Context(), fixture.Metadata.ID, created.Version, fixture.Append)
+	if created.Version != 0 {
+		t.Fatalf("Create version = %d, want zero before the first event", created.Version)
+	}
+	appendData := fixture.Append
+	appendData.Events = slices.Clone(fixture.Append.Events)
+	suppliedTime := time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := range appendData.Events {
+		appendData.Events[i].Sequence = 999
+		appendData.Events[i].CreatedAt = suppliedTime
+	}
+	next, err := fixture.Store.Append(t.Context(), fixture.Metadata.ID, created.Version, appendData)
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if next <= created.Version {
-		t.Fatalf("Append version = %d, want > %d", next, created.Version)
+	if want := uint64(len(appendData.Events)); next != want {
+		t.Fatalf("Append version = %d, want event tip %d", next, want)
 	}
 	if _, err := fixture.Store.Append(t.Context(), fixture.Metadata.ID, created.Version, fixture.Append); err == nil {
 		t.Fatal("stale Append unexpectedly succeeded")
@@ -158,6 +170,50 @@ func RunSessionStoreTests(t *testing.T, factory func(*testing.T) SessionStoreFix
 	}
 	if loaded.Version != next || len(loaded.Events) != len(fixture.Append.Events) {
 		t.Fatalf("Load = version %d events %d, want %d/%d", loaded.Version, len(loaded.Events), next, len(fixture.Append.Events))
+	}
+	for i, event := range loaded.Events {
+		if event.Sequence != uint64(i)+1 || event.CreatedAt.IsZero() || event.CreatedAt.Equal(suppliedTime) {
+			t.Fatalf("event %d lacks store-assigned sequence/time: %+v", i, event)
+		}
+		var gotPayload, wantPayload any
+		if err := json.Unmarshal(event.Payload, &gotPayload); err != nil {
+			t.Fatalf("decode stored event %d: %v", i, err)
+		}
+		if err := json.Unmarshal(fixture.Append.Events[i].Payload, &wantPayload); err != nil {
+			t.Fatalf("decode fixture event %d: %v", i, err)
+		}
+		if event.Code != fixture.Append.Events[i].Code || !reflect.DeepEqual(gotPayload, wantPayload) {
+			t.Fatalf("event %d changed its code or JSON payload", i)
+		}
+	}
+	if fixture.Append.Metadata != nil && !reflect.DeepEqual(loaded.Metadata, *fixture.Append.Metadata) {
+		t.Fatal("metadata and events did not commit together")
+	}
+	changed := loaded.Metadata
+	changed.Label = "must not persist"
+	for _, tt := range []struct {
+		name string
+		data sdd.SessionAppend
+	}{
+		{name: "empty append"},
+		{name: "metadata-only append", data: sdd.SessionAppend{Metadata: &changed}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := fixture.Store.Append(t.Context(), fixture.Metadata.ID, next, tt.data); err == nil {
+				t.Fatal("empty append succeeded")
+			}
+			unchanged, err := fixture.Store.Load(t.Context(), fixture.Metadata.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(loaded, unchanged) {
+				t.Fatal("rejected append changed stored events or metadata")
+			}
+		})
+	}
+	again, err := fixture.Store.Load(t.Context(), fixture.Metadata.ID)
+	if err != nil || !reflect.DeepEqual(again, loaded) {
+		t.Fatalf("reloading changed assigned event positions/timestamps: %v", err)
 	}
 	if want := fixture.Metadata.Attachment; want != nil {
 		got := loaded.Metadata.Attachment
@@ -186,7 +242,7 @@ func RunSessionStoreTests(t *testing.T, factory func(*testing.T) SessionStoreFix
 	endedAt := time.Now().UTC().Round(0)
 	ended := third
 	ended.Ended = &sdd.SessionEnd{Act: sdd.SessionConcluded, EndedAt: endedAt}
-	if _, err := fixture.Store.Append(t.Context(), third.ID, 1, sdd.SessionAppend{Metadata: &ended}); err != nil {
+	if _, err := fixture.Store.Append(t.Context(), third.ID, 0, sdd.SessionAppend{Metadata: &ended, Events: []sdd.StoredEvent{{CodecVersion: 1, Code: "ended", Payload: json.RawMessage(`{}`)}}}); err != nil {
 		t.Fatalf("ending %s: %v", third.ID, err)
 	}
 	var paged []sdd.SessionID
@@ -262,12 +318,8 @@ func RunStagedBlobStoreTests(t *testing.T, factory func(*testing.T) StagedBlobSt
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
-	if blob.Session != fixture.Session || blob.Filename != fixture.Filename || blob.Size != int64(len(fixture.Content)) {
+	if blob.Filename != fixture.Filename || blob.Size != int64(len(fixture.Content)) {
 		t.Fatalf("Stage = %+v", blob)
-	}
-	stat, err := fixture.Store.Stat(t.Context(), fixture.Session, blob.ID)
-	if err != nil || stat != blob {
-		t.Fatalf("Stat = %+v, %v; want %+v", stat, err, blob)
 	}
 	reader, err := fixture.Store.Open(t.Context(), fixture.Session, blob.ID)
 	if err != nil {
@@ -278,67 +330,60 @@ func RunStagedBlobStoreTests(t *testing.T, factory func(*testing.T) StagedBlobSt
 	if readErr != nil || closeErr != nil || !bytes.Equal(got, fixture.Content) {
 		t.Fatalf("Open content = %q, read %v, close %v", got, readErr, closeErr)
 	}
-	if err := fixture.Store.Retain(t.Context(), fixture.Session, "mutation-1", []string{blob.ID}); err != nil {
-		t.Fatalf("Retain: %v", err)
+	replacementContent := append(bytes.Clone(fixture.Content), []byte("\nUpdated staged content.")...)
+	replacement, err := fixture.Store.Stage(t.Context(), fixture.Session, fixture.Filename, bytes.NewReader(replacementContent))
+	if err != nil {
+		t.Fatalf("Stage the same filename again: %v", err)
+	}
+	if replacement.ID == blob.ID {
+		t.Fatal("restaging reused an immutable blob ID")
+	}
+	for _, staged := range []struct {
+		id      string
+		content []byte
+	}{
+		{blob.ID, fixture.Content},
+		{replacement.ID, replacementContent},
+	} {
+		reader, err := fixture.Store.Open(t.Context(), fixture.Session, staged.id)
+		if err != nil {
+			t.Fatalf("Open after restaging: %v", err)
+		}
+		got, readErr := io.ReadAll(reader)
+		closeErr := reader.Close()
+		if readErr != nil || closeErr != nil || !bytes.Equal(got, staged.content) {
+			t.Fatalf("blob %s changed after restaging: content=%q read=%v close=%v", staged.id, got, readErr, closeErr)
+		}
 	}
 
-	// Collection enumerates staging areas and deletes them through this
-	// contract, so an implementation must surface the session it staged for and
-	// must delete a retained blob rather than refusing while a retention holds
-	// it — the sweep's rules decide what is safe to remove, not the store's.
-	// Enumeration pages in SessionRef order after a cursor.
 	other := fixture.Session
-	other.Session += "-page-b"
-	if _, err := fixture.Store.Stage(t.Context(), other, fixture.Filename, bytes.NewReader(fixture.Content)); err != nil {
-		t.Fatalf("Stage(%+v): %v", other, err)
+	other.Session += "-other"
+	if reader, err := fixture.Store.Open(t.Context(), other, blob.ID); err == nil {
+		_ = reader.Close()
+		t.Fatal("Open accepted a blob from another session")
 	}
-	all, err := fixture.Store.StagedSessions(t.Context(), sdd.SessionRef{}, 0)
+	otherBlob, err := fixture.Store.Stage(t.Context(), other, fixture.Filename, bytes.NewReader(fixture.Content))
 	if err != nil {
-		t.Fatalf("StagedSessions: %v", err)
-	}
-	if !slices.Contains(all.Sessions, fixture.Session) || !slices.Contains(all.Sessions, other) || all.Next != (sdd.SessionRef{}) {
-		t.Fatalf("StagedSessions = %+v, want both %+v and %+v with no Next", all, fixture.Session, other)
-	}
-	if !slices.IsSortedFunc(all.Sessions, sdd.SessionRef.Compare) {
-		t.Fatalf("StagedSessions out of SessionRef order: %+v", all.Sessions)
-	}
-	first, err := fixture.Store.StagedSessions(t.Context(), sdd.SessionRef{}, 1)
-	if err != nil {
-		t.Fatalf("StagedSessions page: %v", err)
-	}
-	if len(first.Sessions) != 1 || first.Next != first.Sessions[0] {
-		t.Fatalf("StagedSessions page = %+v, want one area with Next naming it", first)
-	}
-	rest, err := fixture.Store.StagedSessions(t.Context(), first.Next, 0)
-	if err != nil {
-		t.Fatalf("StagedSessions after cursor: %v", err)
-	}
-	if slices.Contains(rest.Sessions, first.Sessions[0]) || len(rest.Sessions) != len(all.Sessions)-1 {
-		t.Fatalf("StagedSessions after %+v = %+v, want the remaining %d areas", first.Next, rest, len(all.Sessions)-1)
-	}
-	if err := fixture.Store.DeleteStaged(t.Context(), other); err != nil {
-		t.Fatalf("DeleteStaged(%+v): %v", other, err)
+		t.Fatalf("Stage other session: %v", err)
 	}
 	if err := fixture.Store.DeleteStaged(t.Context(), fixture.Session); err != nil {
 		t.Fatalf("DeleteStaged: %v", err)
 	}
-	if _, err := fixture.Store.Stat(t.Context(), fixture.Session, blob.ID); err == nil {
-		t.Fatal("Stat after DeleteStaged succeeded, want the blob gone")
+	if reader, err := fixture.Store.Open(t.Context(), fixture.Session, blob.ID); err == nil {
+		_ = reader.Close()
+		t.Fatal("Open after DeleteStaged succeeded")
 	}
 	if err := fixture.Store.DeleteStaged(t.Context(), fixture.Session); err != nil {
-		t.Fatalf("second DeleteStaged = %v, want idempotent success", err)
+		t.Fatalf("second DeleteStaged: %v", err)
 	}
-	afterRefs, err := fixture.Store.StagedSessions(t.Context(), sdd.SessionRef{}, 0)
+	reader, err = fixture.Store.Open(t.Context(), other, otherBlob.ID)
 	if err != nil {
-		t.Fatalf("StagedSessions after DeleteStaged: %v", err)
+		t.Fatalf("Open other session after DeleteStaged: %v", err)
 	}
-	if slices.Contains(afterRefs.Sessions, fixture.Session) {
-		t.Fatal("StagedSessions still returns the deleted session")
-	}
-
-	// Release on a gone staging area must not resurrect it.
-	if err := fixture.Store.Release(t.Context(), fixture.Session, "mutation-1"); err != nil {
-		t.Fatalf("Release: %v", err)
+	got, readErr = io.ReadAll(reader)
+	closeErr = reader.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(got, fixture.Content) {
+		t.Fatalf("other session content = %q, read %v, close %v", got, readErr, closeErr)
 	}
 }
 

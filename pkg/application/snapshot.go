@@ -207,7 +207,7 @@ func LoadSnapshotFS(ctx context.Context, project ProjectID, revision string, fsy
 			data.WIP = append(data.WIP, WIPDocument{LogicalPath: rel, Content: string(raw)})
 			continue
 		}
-		document, err := parseEntryDocument(rel, raw)
+		document, err := ParseEntryDocument(rel, raw)
 		if err != nil {
 			// Decode failures become health issues; source read failures stay errors.
 			data.Unreadable = append(data.Unreadable, DocumentIssue{LogicalPath: rel, Message: err.Error()})
@@ -239,7 +239,8 @@ func LoadSnapshotFS(ctx context.Context, project ProjectID, revision string, fsy
 	return BuildSnapshot(ctx, data)
 }
 
-func parseEntryDocument(logicalPath string, raw []byte) (EntryDocument, error) {
+// ParseEntryDocument decodes stored entry bytes; BuildSnapshot owns graph validation.
+func ParseEntryDocument(logicalPath string, raw []byte) (EntryDocument, error) {
 	text := string(raw)
 	if !strings.HasPrefix(text, "---\n") {
 		return EntryDocument{}, fmt.Errorf("missing YAML frontmatter")

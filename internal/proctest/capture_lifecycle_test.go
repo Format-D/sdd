@@ -6,9 +6,11 @@
 package proctest_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/networkteam/sdd/internal/model"
 	"github.com/networkteam/sdd/internal/proctest"
 )
 
@@ -230,5 +232,53 @@ func TestReportSchema_AdvertisesLifecycleFieldsAtAssemble(t *testing.T) {
 		if item == nil || item["pattern"] == nil {
 			t.Errorf("%s items should advertise the entry-id pattern, got %v", name, array["items"])
 		}
+	}
+}
+
+func TestCapture_SupersedesSeededAtStartPersist(t *testing.T) {
+	const first = "20260717-130000-s-tac-old"
+	const second = "20260717-130200-s-tac-oldr"
+	for _, tc := range []struct {
+		name    string
+		targets []string
+	}{
+		{name: "single", targets: []string{first}},
+		{name: "multiple", targets: []string{first, second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world, session := newCaptureWorld(t, "supersede-"+tc.name, proctest.WithEntries(
+				&model.Entry{ID: first, Type: model.TypeSignal, Kind: model.KindFact, Layer: model.LayerTactical,
+					Summary: "The earlier reading.", Content: "The earlier reading."},
+				&model.Entry{ID: second, Type: model.TypeSignal, Kind: model.KindFact, Layer: model.LayerTactical,
+					Summary: "The other earlier reading.", Content: "The other earlier reading."},
+			))
+			session.LogRead(t, "show", tc.targets, nil)
+			var supersedes []any
+			for _, id := range tc.targets {
+				supersedes = append(supersedes, id)
+			}
+			serve := session.Start(t, "capture", map[string]any{"supersedes": supersedes})
+			instance := serve.Instance
+			draft := captureDraft()
+			draft["entryKind"] = "fact"
+			draft["body"] = "The current reading replaces the earlier readings."
+			serve = session.Report(t, instance, draft)
+			proctest.RequireStep(t, serve, "playback")
+			for _, id := range tc.targets {
+				if !strings.Contains(serve.Instructions, id) {
+					t.Errorf("playback omitted superseded entry %s", id)
+				}
+			}
+
+			serve = session.Answer(t, instance, "playback", "confirm", nil, "confirm")
+			proctest.RequireStep(t, serve, "verifySummary")
+			serve = session.Answer(t, instance, "verifySummary", "faithful", map[string]any{"fidelityNote": "matches"}, "")
+			proctest.RequireStatus(t, serve, "completed")
+			entryID, _ := serve.Produced["entryId"].(string)
+			entry := proctest.LoadEntry(t, world.GraphDir, entryID)
+			if !slices.Equal(entry.Supersedes, tc.targets) {
+				t.Fatalf("persisted supersedes = %v, want %v", entry.Supersedes, tc.targets)
+			}
+		})
 	}
 }

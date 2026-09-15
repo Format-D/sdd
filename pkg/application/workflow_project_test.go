@@ -141,9 +141,10 @@ func TestInstanceTargetsProjectInDependencyClosure(t *testing.T) {
 
 	// A write in the dependency reaches the dependency's runtime and fails
 	// there, naming it: locally a dependency has no write authority yet.
-	_, err = application.CreateEntry(t.Context(), alice, "project-b", workflow.Binding(), sdd.EntryDraft{
+	draft := identifiedCaptureDraft(workflow.Binding(), 1, sdd.EntryDraft{
 		Kind: "gap", Layer: "tactical", Body: "A gap noticed while working in the dependency.",
 	})
+	_, err = application.CreateEntry(t.Context(), alice, "project-b", workflow.Binding(), draft)
 	if err == nil || !strings.Contains(err.Error(), "project-b") {
 		t.Fatalf("write in dependency = %v, want a refusal naming project-b", err)
 	}

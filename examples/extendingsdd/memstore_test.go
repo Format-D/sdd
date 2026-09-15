@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -11,23 +12,23 @@ import (
 	"github.com/networkteam/sdd/pkg/sddtest"
 )
 
-// The conformance suites are the parity mechanism between local and external
-// adapters (d-tac-wjq): the same behaviour is required of both, including the
-// enumeration and deletion collection reaches through.
-
 func TestExternalSessionStoreConformance(t *testing.T) {
 	sddtest.RunSessionStoreTests(t, func(*testing.T) sddtest.SessionStoreFixture {
-		return sddtest.SessionStoreFixture{
-			Store: newMemorySessionStore(),
-			Metadata: sdd.SessionMetadata{
-				ID: "session-1", Subject: "example-user", Project: "example", Participant: "Example",
-				Attachment: &sdd.Attachment{
-					Subject: "example-user", ClientName: "test-client",
-					LastActivity: time.Now().UTC().Round(0),
-				},
+		metadata := sdd.SessionMetadata{
+			ID: "session-1", Subject: "example-user", Project: "example", Participant: "Example",
+			Attachment: &sdd.Attachment{
+				Subject: "example-user", ClientName: "test-client",
+				LastActivity: time.Now().UTC().Round(0),
 			},
-			Append: sdd.SessionAppend{Events: []sdd.StoredEvent{
+		}
+		updated := metadata
+		updated.Label = "Recorded subject"
+		return sddtest.SessionStoreFixture{
+			Store:    newMemorySessionStore(),
+			Metadata: metadata,
+			Append: sdd.SessionAppend{Metadata: &updated, Events: []sdd.StoredEvent{
 				{CodecVersion: 1, Code: "started", Payload: json.RawMessage(`{"instance":"i_1"}`)},
+				{CodecVersion: 1, Code: "labeled", Payload: json.RawMessage(`{"label":"Recorded subject"}`)},
 			}},
 		}
 	})
@@ -36,7 +37,7 @@ func TestExternalSessionStoreConformance(t *testing.T) {
 func TestExternalStagedBlobStoreConformance(t *testing.T) {
 	sddtest.RunStagedBlobStoreTests(t, func(*testing.T) sddtest.StagedBlobStoreFixture {
 		return sddtest.StagedBlobStoreFixture{
-			Store:    newMemoryStagedBlobStore(nil),
+			Store:    newMemoryStagedBlobStore(),
 			Session:  sdd.SessionRef{Subject: "example-user", Session: "session-1"},
 			Filename: "evidence.md",
 			Content:  []byte("evidence"),
@@ -61,7 +62,7 @@ func newCollectFixture(t *testing.T) collectFixture {
 	t.Helper()
 	now := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
 	sessions := newMemorySessionStore()
-	blobs := newMemoryStagedBlobStore(func() time.Time { return now })
+	blobs := newMemoryStagedBlobStore()
 	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: "example", DisplayName: "Example"},
 		Graph:   graphStore{},
@@ -102,17 +103,26 @@ func (f collectFixture) writeSession(t *testing.T, id sdd.SessionID, ended time.
 	ending := metadata
 	ending.Attachment = nil
 	ending.Ended = &sdd.SessionEnd{Act: act, EndedAt: ended}
-	if _, err := f.sessions.Append(t.Context(), id, created.Version, sdd.SessionAppend{Metadata: &ending}); err != nil {
+	payload, err := json.Marshal(ending.Ended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.sessions.Append(t.Context(), id, created.Version, sdd.SessionAppend{
+		Metadata: &ending,
+		Events:   []sdd.StoredEvent{{CodecVersion: sdd.SessionCodecVersion, Code: sdd.SessionEndedEventCode, Payload: payload}},
+	}); err != nil {
 		t.Fatalf("ending %s: %v", id, err)
 	}
 }
 
-func (f collectFixture) stage(t *testing.T, id sdd.SessionID) {
+func (f collectFixture) stage(t *testing.T, id sdd.SessionID) sdd.StagedBlob {
 	t.Helper()
 	ref := sdd.SessionRef{Subject: collectSubject, Session: id}
-	if _, err := f.blobs.Stage(t.Context(), ref, "evidence.md", strings.NewReader("evidence")); err != nil {
+	blob, err := f.blobs.Stage(t.Context(), ref, "evidence.md", strings.NewReader("evidence"))
+	if err != nil {
 		t.Fatalf("Stage(%s): %v", id, err)
 	}
+	return blob
 }
 
 func (f collectFixture) collect(t *testing.T, retention time.Duration) sdd.CollectSessionsResult {
@@ -140,20 +150,6 @@ func (f collectFixture) listedIDs(t *testing.T) []string {
 	return ids
 }
 
-func (f collectFixture) stagedIDs(t *testing.T) []string {
-	t.Helper()
-	page, err := f.blobs.StagedSessions(t.Context(), sdd.SessionRef{}, 0)
-	if err != nil {
-		t.Fatalf("StagedSessions: %v", err)
-	}
-	ids := make([]string, 0, len(page.Sessions))
-	for _, ref := range page.Sessions {
-		ids = append(ids, string(ref.Session))
-	}
-	slices.Sort(ids)
-	return ids
-}
-
 // TestExternalCollectionThroughExportedAPI drives the collection pass a local
 // start runs, from outside the module and over composition-owned storage: the
 // removal rule is the one criterion an external composition cannot take on
@@ -164,8 +160,9 @@ func TestExternalCollectionThroughExportedAPI(t *testing.T) {
 	f.writeSession(t, "ended-old", f.now.Add(-48*time.Hour), sdd.SessionConcluded)
 	f.writeSession(t, "ended-recent", f.now.Add(-1*time.Hour), sdd.SessionAbandoned)
 	f.writeSession(t, "still-open", time.Time{}, "")
-	for _, id := range []sdd.SessionID{"ended-old", "ended-recent", "still-open", "orphan"} {
-		f.stage(t, id)
+	blobs := map[sdd.SessionID]sdd.StagedBlob{}
+	for _, id := range []sdd.SessionID{"ended-old", "ended-recent", "still-open"} {
+		blobs[id] = f.stage(t, id)
 	}
 
 	result := f.collect(t, 24*time.Hour)
@@ -176,13 +173,26 @@ func TestExternalCollectionThroughExportedAPI(t *testing.T) {
 	if got, want := f.listedIDs(t), []string{"ended-recent", "still-open"}; !slices.Equal(got, want) {
 		t.Fatalf("listed = %v, want %v", got, want)
 	}
-	// The removed session's blobs go with it; the staging area of a session
-	// that never existed is an orphan and goes too.
-	if got, want := f.stagedIDs(t), []string{"ended-recent", "still-open"}; !slices.Equal(got, want) {
-		t.Fatalf("staged = %v, want %v", got, want)
+	if got, want := result.RemovedStaged, []sdd.SessionRef{{Subject: collectSubject, Session: "ended-old"}}; !slices.Equal(got, want) {
+		t.Fatalf("RemovedStaged = %v, want %v", got, want)
 	}
-	if !slices.Contains(result.RemovedStaged, (sdd.SessionRef{Subject: collectSubject, Session: "orphan"})) {
-		t.Fatalf("RemovedStaged = %v, want it to contain the orphan", result.RemovedStaged)
+	for id, blob := range blobs {
+		reader, err := f.blobs.Open(t.Context(), sdd.SessionRef{Subject: collectSubject, Session: id}, blob.ID)
+		if id == "ended-old" {
+			if err == nil {
+				_ = reader.Close()
+				t.Fatal("collected session's blob remains readable")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("Open(%s): %v", id, err)
+		}
+		content, readErr := io.ReadAll(reader)
+		closeErr := reader.Close()
+		if readErr != nil || closeErr != nil || string(content) != "evidence" {
+			t.Fatalf("retained blob for %s = %q, read %v, close %v", id, content, readErr, closeErr)
+		}
 	}
 	if len(result.Skipped) != 0 {
 		t.Fatalf("Skipped = %v, want nothing reported as actionable", result.Skipped)

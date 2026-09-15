@@ -33,7 +33,7 @@ The `sdd` binary lives at `./bin/sdd` (gitignored — rebuild locally with `devb
 
 ## Architecture
 
-- **Library first**: Domain logic lives in `internal/`. `cmd/sdd/` is a thin shell that parses flags, dispatches commands/queries, and uses presenters to render results. Keep business logic out of CLI actions.
+- **Library first**: Domain logic lives in `internal/`. `internal/cliapp` exposes the runnable command tree with supplied input, output and error streams. `cmd/sdd/` supplies process arguments, streams, signals and exit handling. Keep business logic out of CLI actions.
 
 - **CQRS layering** (per d-cpt-l3s, enforced by the planning contract d-cpt-ah1): functionality decomposes across five packages —
   - `internal/command/` — write-intent structs (e.g. `NewEntryCmd`) with optional result callbacks carrying small identifiers (e.g. `OnNewEntry func(id string)`).
@@ -77,6 +77,7 @@ The `sdd` binary lives at `./bin/sdd` (gitignored — rebuild locally with `devb
 sdd/
 ├── cmd/sdd/                # CLI entrypoint (main.go)
 ├── internal/
+│   ├── cliapp/             # Runnable CLI composition; command and stream tests run in-process
 │   ├── command/            # Write-intent structs (CQRS commands)
 │   ├── query/              # Read-intent structs (CQRS queries)
 │   ├── handlers/           # Command execution — side effects live here

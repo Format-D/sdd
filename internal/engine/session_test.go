@@ -263,7 +263,7 @@ func TestWriterSinkAndReadEvents_RoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	sink := NewWriterSink(&buf)
 	for i := 1; i <= 3; i++ {
-		if err := sink.Append(Event{V: 1, Session: "s", Seq: i, Event: EventServed,
+		if _, err := sink.Append(Event{V: 1, Session: "s", Seq: i, Event: EventServed,
 			Instance: "i_1", Data: map[string]any{"step": "assemble"}}); err != nil {
 			t.Fatal(err)
 		}
