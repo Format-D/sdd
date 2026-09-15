@@ -173,58 +173,65 @@ func deriveLegacyEnd(stored *StoredSession) error {
 		stored.Metadata.Ended = &end
 		return nil
 	}
-	stored.Metadata.Ended = endFromShellEvents(stored.Events)
+	if end, derivable := endFromShellEvents(stored.Events); derivable {
+		stored.Metadata.Ended = end
+	}
 	return nil
 }
 
 // endFromShellEvents reads the shell instances for the act that ended the
 // dialogue: logs written before the terminal record existed left the
-// participant's conclude as nothing but the shell's own engine event. A shell no
+// participant's conclude or abandon as nothing but the shell's own engine
+// event, which carries the act and, for an abandon, the reason. A shell no
 // longer running is the dialogue over, since carrying it on would mean starting
-// a fresh one — the revival an ended session refuses (d-tac-k4q). Both ways a
-// shell leaves running map to the same act the write site records. Events this
-// binary cannot decode derive nothing; the consumer reports the unreadable log.
-func endFromShellEvents(events []StoredEvent) *SessionEnd {
+// a fresh one — the revival an ended session refuses (d-tac-k4q). A log with
+// no shell at all derives nothing and reports so, leaving any recorded ending
+// in place. Events this binary cannot decode derive nothing; the consumer
+// reports the unreadable log.
+func endFromShellEvents(events []StoredEvent) (*SessionEnd, bool) {
 	decoded, err := decodeWorkflowEvents(events)
 	if err != nil {
-		return nil
+		return nil, true
 	}
 	shells := map[string]bool{}
-	var endedAt time.Time
+	var end *SessionEnd
+	record := func(instance string, act SessionEndAct, at time.Time, reason string) {
+		shells[instance] = true
+		if end == nil || at.After(end.EndedAt) {
+			end = &SessionEnd{Act: act, EndedAt: at, Reason: reason}
+		}
+	}
 	for _, event := range decoded {
+		if _, shell := shells[event.Instance]; !shell && event.Event != engine.EventStarted {
+			continue
+		}
 		switch event.Event {
 		case engine.EventStarted:
 			if class, _ := event.Data["class"].(string); class == string(model.ProcedureClassShell) {
 				shells[event.Instance] = false
 			}
-		case engine.EventCompleted, engine.EventAbandoned:
-			if _, ok := shells[event.Instance]; !ok {
-				continue
-			}
-			shells[event.Instance] = true
-			if event.TS.After(endedAt) {
-				endedAt = event.TS
-			}
+		case engine.EventCompleted:
+			record(event.Instance, SessionConcluded, event.TS, "")
+		case engine.EventAbandoned:
+			reason, _ := event.Data["reason"].(string)
+			record(event.Instance, SessionAbandoned, event.TS, reason)
 		case engine.EventMutationOutcome:
 			outcome, _ := event.Data["outcome"].(string)
 			returnStep, ok := event.Data["return_step"].(string)
-			if _, shell := shells[event.Instance]; shell && outcome == engine.MutationCancelled && ok && returnStep == "" {
-				shells[event.Instance] = true
-				if event.TS.After(endedAt) {
-					endedAt = event.TS
-				}
+			if outcome == engine.MutationCancelled && ok && returnStep == "" {
+				record(event.Instance, SessionConcluded, event.TS, "")
 			}
 		}
 	}
 	if len(shells) == 0 {
-		return nil
+		return nil, false
 	}
 	for _, ended := range shells {
 		if !ended {
-			return nil
+			return nil, true
 		}
 	}
-	return &SessionEnd{Act: SessionConcluded, EndedAt: endedAt}
+	return end, true
 }
 
 // StoredEvent carries the store-assigned position and append time. A zero CreatedAt

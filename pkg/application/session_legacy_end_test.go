@@ -62,11 +62,12 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 		secondEnd  = "2026-07-20T11:00:00Z"
 	)
 	for _, tc := range []struct {
-		name    string
-		ended   string
-		events  []string
-		wantAct sdd.SessionEndAct
-		wantAt  string
+		name       string
+		ended      string
+		events     []string
+		wantAct    sdd.SessionEndAct
+		wantAt     string
+		wantReason string
 	}{
 		{
 			name: "a completed shell ends the session",
@@ -77,22 +78,27 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 			wantAct: sdd.SessionConcluded, wantAt: firstEnd,
 		},
 		{
-			name: "an abandoned shell ends the session the same way",
+			name: "an abandoned shell ends the session as abandoned, with its reason",
 			events: []string{
 				legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData),
-				legacyEvent("s_legacy", 2, "i_1", "abandoned", firstEnd, ""),
+				legacyEvent("s_legacy", 2, "i_1", "abandoned", firstEnd, `{"reason":"torn down"}`),
 			},
-			wantAct: sdd.SessionConcluded, wantAt: firstEnd,
+			wantAct: sdd.SessionAbandoned, wantAt: firstEnd, wantReason: "torn down",
 		},
 		{
-			name: "a revived shell ends the session when it too is over",
+			name:    "a log without shell events keeps its recorded ending",
+			ended:   `,"Ended":{"Act":"abandoned","EndedAt":"` + secondEnd + `","Reason":"torn down"}`,
+			wantAct: sdd.SessionAbandoned, wantAt: secondEnd, wantReason: "torn down",
+		},
+		{
+			name: "a revived shell ends the session with its own terminal act",
 			events: []string{
 				legacyEvent("s_legacy", 1, "i_1", "started", shellStart, legacyShellData),
 				legacyEvent("s_legacy", 2, "i_1", "completed", firstEnd, ""),
 				legacyEvent("s_legacy", 3, "i_2", "started", firstEnd, legacyShellData),
 				legacyEvent("s_legacy", 4, "i_2", "abandoned", secondEnd, ""),
 			},
-			wantAct: sdd.SessionConcluded, wantAt: secondEnd,
+			wantAct: sdd.SessionAbandoned, wantAt: secondEnd,
 		},
 		{
 			name: "a running shell keeps the session live however its moves ended",
@@ -144,6 +150,9 @@ func TestLegacyEndIsDerivedFromTheShellsTerminalEvent(t *testing.T) {
 			}
 			if got := appErr.Ended.EndedAt.Format(time.RFC3339); got != tc.wantAt {
 				t.Fatalf("Ended.EndedAt = %s, want %s", got, tc.wantAt)
+			}
+			if appErr.Ended.Reason != tc.wantReason {
+				t.Fatalf("Ended.Reason = %q, want %q", appErr.Ended.Reason, tc.wantReason)
 			}
 			if !strings.Contains(err.Error(), "start_session") {
 				t.Fatalf("the refusal must name the new-session path, got %q", err.Error())
