@@ -87,6 +87,10 @@ func NewRunner(cfg model.LLMConfig) (*Runner, error) {
 		}
 	}
 
+	if cfg.Provider == "openai" && cfg.Endpoint != "" {
+		opts = append(opts, upstream.SetOpenAIEndpoint(cfg.Endpoint))
+	}
+
 	// Enable Anthropic prompt caching — sends the anthropic-beta header so
 	// cache_control blocks on system prompts are honored server-side.
 	useCache := cfg.Provider == "anthropic"
