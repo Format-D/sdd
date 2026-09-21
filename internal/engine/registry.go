@@ -106,6 +106,9 @@ type Command struct {
 	Fn  CommandFunc
 	// Prepare allocates resource identities before the durable intent is appended.
 	Prepare func(*Context) (map[string]string, error)
+	// Effects reports what a recorded invocation left, read from the
+	// operation's own storage; the engine passes it through unread (d-tac-7mh).
+	Effects func(*Context) ([]Effect, error)
 	// GraphIndependent leaves source acquisition to the operation.
 	GraphIndependent bool
 	// MutatesGraph declares that running this command changes the on-disk graph

@@ -110,31 +110,86 @@ type ChooserResult struct {
 	Options []ChooserOptionResult `json:"options"`
 }
 
+// PendingOperationResult is the unfinished recorded operation beside the
+// pending-operation position's prose (d-tac-t6u).
+type PendingOperationResult struct {
+	Instance  string            `json:"instance"`
+	RetryRef  uint64            `json:"retry_ref" jsonschema:"pass as retry_ref to next, with this instance and no report, to run the operation again on its recorded input"`
+	CancelRef uint64            `json:"cancel_ref" jsonschema:"pass as cancel_ref to next, with this instance and no report, to leave its effects in place and return to the preceding interaction"`
+	Command   string            `json:"command"`
+	Values    map[string]string `json:"values,omitempty" jsonschema:"identifiers the operation recorded before it ran"`
+	Error     string            `json:"error,omitempty" jsonschema:"why this attempt did not finish; present at the moment of failure only"`
+	ErrorCode string            `json:"error_code,omitempty"`
+}
+
+// EffectResult is one thing a cancelled operation reports it left.
+type EffectResult struct {
+	Kind  string `json:"kind"`
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+// CancellationResult is a recorded cancellation: where the instance returned
+// to and what the operation reports it left. Nothing was cleaned up.
+type CancellationResult struct {
+	Instance   string            `json:"instance"`
+	CancelRef  uint64            `json:"cancel_ref"`
+	Command    string            `json:"command"`
+	Values     map[string]string `json:"values,omitempty"`
+	ReturnStep string            `json:"return_step,omitempty"`
+	Closed     bool              `json:"closed" jsonschema:"true when no interaction preceded the operation and the instance closed instead of returning"`
+	Effects    []EffectResult    `json:"effects,omitempty"`
+}
+
+func pendingOperationResult(pending *sdd.WorkflowPendingOperation) *PendingOperationResult {
+	if pending == nil {
+		return nil
+	}
+	return &PendingOperationResult{
+		Instance: pending.Instance, RetryRef: pending.RetryRef, CancelRef: pending.CancelRef, Command: pending.Command,
+		Values: pending.Values, Error: pending.Error, ErrorCode: string(pending.ErrorCode),
+	}
+}
+
+func cancellationResult(cancelled *sdd.WorkflowCancellation) *CancellationResult {
+	if cancelled == nil {
+		return nil
+	}
+	result := &CancellationResult{
+		Instance: cancelled.Instance, CancelRef: cancelled.CancelRef, Command: cancelled.Command, Values: cancelled.Values,
+		ReturnStep: cancelled.ReturnStep, Closed: cancelled.Closed,
+	}
+	for _, effect := range cancelled.Effects {
+		result.Effects = append(result.Effects, EffectResult{Kind: effect.Kind, ID: effect.ID, State: effect.State})
+	}
+	return result
+}
+
 // ServeResult is the loop's uniform response shape: where the instance
 // stands, what advances it, and the material to work with.
 type ServeResult struct {
-	Session          string                        `json:"session,omitempty" jsonschema:"session handle (the session ID); sessions survive restarts and resume via resume_session. Pass it to every other tool"`
-	Project          string                        `json:"project,omitempty" jsonschema:"the project this instance works in — the session's home project unless the move was started in a dependency"`
-	Projects         []ProjectResult               `json:"projects,omitempty" jsonschema:"start_session only: the principal's accessible projects, served with status project-required when several exist and none was passed — no session opened yet"`
-	Branch           string                        `json:"branch,omitempty" jsonschema:"the session's declared branch binding"`
-	Instance         string                        `json:"instance,omitempty"`
-	Procedure        string                        `json:"procedure,omitempty"`
-	Status           string                        `json:"status" jsonschema:"running, completed, or abandoned — or project-required from start_session, when a project must be chosen first"`
-	Step             string                        `json:"step,omitempty"`
-	Goal             string                        `json:"goal" jsonschema:"one line: what advances the instance from here"`
-	Instructions     string                        `json:"instructions,omitempty"`
-	Missing          []string                      `json:"missing,omitempty" jsonschema:"required report fields not yet provided"`
-	ReportSchema     map[string]any                `json:"report_schema,omitempty" jsonschema:"JSON Schema for the current step's report"`
-	PendingChooser   *ChooserResult                `json:"pending_chooser,omitempty"`
-	PendingOperation *sdd.WorkflowPendingOperation `json:"pending_operation,omitempty" jsonschema:"unfinished recorded operation; use its instance with retry_ref or cancel_ref in next, without report"`
-	Cancellation     *sdd.WorkflowCancellation     `json:"cancellation,omitempty" jsonschema:"recorded cancellation, return position and effects left in place"`
-	Execution        string                        `json:"execution,omitempty" jsonschema:"execution hint for this instance; fork-preferred means the procedure is a task best run in a disposable forked context"`
-	Produced         map[string]string             `json:"produced,omitempty" jsonschema:"engine-written results on completion (e.g. the created entry ID)"`
-	Framing          string                        `json:"framing,omitempty" jsonschema:"session framing (aspirations, directives, focus, participants); served when its content is new to this connection, omitted while unchanged"`
-	Vocabulary       string                        `json:"vocabulary,omitempty" jsonschema:"translation table for non-English graphs: canonical tokens stay English, user-facing narration renders in the configured language; served once per connection"`
-	OpenThreads      string                        `json:"open_threads,omitempty" jsonschema:"this dialogue's own open threads, carried on the session shell's serves. Other dialogues are never listed here"`
-	Base             *BaseServe                    `json:"base_junction,omitempty" jsonschema:"the session shell's current serve — where the dialogue lands now that this move has ended"`
-	Collected        map[string]string             `json:"collected,omitempty" jsonschema:"state already collected by this instance — values persist across handover; do not re-derive them"`
+	Session          string                  `json:"session,omitempty" jsonschema:"session handle (the session ID); sessions survive restarts and resume via resume_session. Pass it to every other tool"`
+	Project          string                  `json:"project,omitempty" jsonschema:"the project this instance works in — the session's home project unless the move was started in a dependency"`
+	Projects         []ProjectResult         `json:"projects,omitempty" jsonschema:"start_session only: the principal's accessible projects, served with status project-required when several exist and none was passed — no session opened yet"`
+	Branch           string                  `json:"branch,omitempty" jsonschema:"the session's declared branch binding"`
+	Instance         string                  `json:"instance,omitempty"`
+	Procedure        string                  `json:"procedure,omitempty"`
+	Status           string                  `json:"status" jsonschema:"running, completed, or abandoned — or project-required from start_session, when a project must be chosen first"`
+	Step             string                  `json:"step,omitempty"`
+	Goal             string                  `json:"goal" jsonschema:"one line: what advances the instance from here"`
+	Instructions     string                  `json:"instructions,omitempty"`
+	Missing          []string                `json:"missing,omitempty" jsonschema:"required report fields not yet provided"`
+	ReportSchema     map[string]any          `json:"report_schema,omitempty" jsonschema:"JSON Schema for the current step's report"`
+	PendingChooser   *ChooserResult          `json:"pending_chooser,omitempty"`
+	PendingOperation *PendingOperationResult `json:"pending_operation,omitempty" jsonschema:"unfinished recorded operation; only its retry_ref or cancel_ref advances this session"`
+	Cancellation     *CancellationResult     `json:"cancellation,omitempty" jsonschema:"recorded cancellation: return position and what the operation reports it left"`
+	Execution        string                  `json:"execution,omitempty" jsonschema:"execution hint for this instance; fork-preferred means the procedure is a task best run in a disposable forked context"`
+	Produced         map[string]string       `json:"produced,omitempty" jsonschema:"engine-written results on completion (e.g. the created entry ID)"`
+	Framing          string                  `json:"framing,omitempty" jsonschema:"session framing (aspirations, directives, focus, participants); served when its content is new to this connection, omitted while unchanged"`
+	Vocabulary       string                  `json:"vocabulary,omitempty" jsonschema:"translation table for non-English graphs: canonical tokens stay English, user-facing narration renders in the configured language; served once per connection"`
+	OpenThreads      string                  `json:"open_threads,omitempty" jsonschema:"this dialogue's own open threads, carried on the session shell's serves. Other dialogues are never listed here"`
+	Base             *BaseServe              `json:"base_junction,omitempty" jsonschema:"the session shell's current serve — where the dialogue lands now that this move has ended"`
+	Collected        map[string]string       `json:"collected,omitempty" jsonschema:"state already collected by this instance — values persist across handover; do not re-derive them"`
 }
 
 // BaseServe is the session shell's serve as nested into landing responses
@@ -162,16 +217,16 @@ type ResumeSessionArgs struct {
 }
 
 type ResumeSessionResult struct {
-	Session          string                        `json:"session" jsonschema:"session handle (the session ID)"`
-	Project          string                        `json:"project,omitempty" jsonschema:"the project this session is bound to"`
-	Participant      string                        `json:"participant,omitempty"`
-	Label            string                        `json:"label,omitempty" jsonschema:"the session's subject label, when one was recorded"`
-	Branch           string                        `json:"branch,omitempty" jsonschema:"the session's declared branch binding"`
-	PendingOperation *sdd.WorkflowPendingOperation `json:"pending_operation,omitempty" jsonschema:"unfinished recorded operation, included even when its open instance is omitted for size"`
-	Cancellation     *sdd.WorkflowCancellation     `json:"cancellation,omitempty" jsonschema:"latest recorded cancellation, included even when its instance is closed or omitted"`
-	Open             []ServeResult                 `json:"open_instances" jsonschema:"current serve for every running instance; the session shell's serve carries the open-threads block"`
-	Framing          string                        `json:"framing,omitempty"`
-	Instructions     string                        `json:"instructions,omitempty"`
+	Session          string                  `json:"session" jsonschema:"session handle (the session ID)"`
+	Project          string                  `json:"project,omitempty" jsonschema:"the project this session is bound to"`
+	Participant      string                  `json:"participant,omitempty"`
+	Label            string                  `json:"label,omitempty" jsonschema:"the session's subject label, when one was recorded"`
+	Branch           string                  `json:"branch,omitempty" jsonschema:"the session's declared branch binding"`
+	PendingOperation *PendingOperationResult `json:"pending_operation,omitempty" jsonschema:"unfinished recorded operation; its instance's serve in open_instances carries the position"`
+	Cancellation     *CancellationResult     `json:"cancellation,omitempty" jsonschema:"latest recorded cancellation, included even when its instance is closed or omitted"`
+	Open             []ServeResult           `json:"open_instances" jsonschema:"current serve for every running instance; the session shell's serve carries the open-threads block"`
+	Framing          string                  `json:"framing,omitempty"`
+	Instructions     string                  `json:"instructions,omitempty"`
 }
 
 type BindBranchArgs struct {
@@ -1164,7 +1219,7 @@ func (s *Server) serveResultBody(ctx context.Context, req *mcp.CallToolRequest, 
 		Branch: serve.Branch, Instance: serve.Instance, Procedure: serve.Procedure, Status: serve.Status,
 		Step: serve.Step, Goal: serve.Goal, Instructions: composeInstructions(ss, serve), Missing: serve.Missing,
 		ReportSchema: serve.ReportSchema, Produced: capValues(serve.Produced), Execution: serve.Execution,
-		Collected: capValues(serve.Collected), PendingOperation: serve.PendingOperation, Cancellation: serve.Cancellation,
+		Collected: capValues(serve.Collected), PendingOperation: pendingOperationResult(serve.PendingOperation), Cancellation: cancellationResult(serve.Cancellation),
 	}
 	if serve.PendingChooser != nil {
 		chooser := &ChooserResult{Chooser: serve.PendingChooser.Chooser, Kind: string(serve.PendingChooser.Kind)}
@@ -1278,7 +1333,7 @@ func (s *Server) mapRootResume(ctx context.Context, req *mcp.CallToolRequest, ss
 	result := ResumeSessionResult{
 		Session: string(source.Session), Project: string(ss.root.Project()),
 		Participant: source.Participant, Label: source.Label, Branch: source.Branch,
-		Instructions: resumeInstructions, PendingOperation: source.PendingOperation, Cancellation: source.Cancellation,
+		Instructions: resumeInstructions, PendingOperation: pendingOperationResult(source.PendingOperation), Cancellation: cancellationResult(source.Cancellation),
 	}
 	if source.Instructions != "" {
 		result.Instructions += "\n\n" + source.Instructions
@@ -1298,7 +1353,10 @@ func (s *Server) mapRootResume(ctx context.Context, req *mcp.CallToolRequest, ss
 	for i := range source.Open {
 		serve := &source.Open[i]
 		size := resumeServeBytes(serve)
-		if len(result.Open) >= maxResumeOpenInstances || (len(result.Open) > 0 && spent+size > resumeOpenBudgetBytes) {
+		// The instance holding an unfinished operation is the position the
+		// resume exists to re-serve; it is never the one cut for size.
+		pending := source.PendingOperation != nil && source.PendingOperation.Instance == serve.Instance
+		if !pending && (len(result.Open) >= maxResumeOpenInstances || (len(result.Open) > 0 && spent+size > resumeOpenBudgetBytes)) {
 			omitted = append(omitted, fmt.Sprintf("%s (%s at %s)", serve.Instance, serve.Procedure, serve.Step))
 			continue
 		}

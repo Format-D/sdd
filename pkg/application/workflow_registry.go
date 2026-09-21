@@ -266,6 +266,7 @@ func (w *WorkflowSession) registerWorkflowWrites(registry *engine.Registry) erro
 		GraphIndependent: true,
 		Prepare:          w.prepareWorkflowNewEntry,
 		Fn:               w.runWorkflowNewEntry,
+		Effects:          w.reportWorkflowNewEntryEffects,
 	}); err != nil {
 		return err
 	}
@@ -464,7 +465,7 @@ func (w *WorkflowSession) runWorkflowNewEntry(ctx *engine.Context) error {
 	draft := w.draftFromStore(ctx.Store)
 	draft.Target = target
 	draft.EntryID = ctx.Intent.Values["entryId"]
-	draft.Publication = PublicationKey{Session: w.ID(), Sequence: ctx.Intent.Ref, Discriminator: "newEntry"}
+	draft.Publication = w.newEntryPublicationKey(ctx.Intent)
 	staged, err := w.stagedAt(ctx.Intent.Ref)
 	if err != nil {
 		return err

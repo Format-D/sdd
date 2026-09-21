@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/networkteam/slogutils"
+
 	"github.com/networkteam/sdd/internal/engine"
 	"github.com/networkteam/sdd/internal/model"
 	"github.com/networkteam/sdd/internal/query"
@@ -71,12 +73,39 @@ func (w *WorkflowSession) prepareWorkflowNewEntry(ctx *engine.Context) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	suffix, err := model.RandomSuffix(3)
+	suffix, err := w.app.entrySuffix(3)
 	if err != nil {
 		return nil, err
 	}
 	id := model.GenerateIDAt(entryType, draftLayer(layer), suffix, w.app.now())
 	return map[string]string{"entryId": id, "project": string(w.instanceProject(ctx.Instance)), "branch": branch}, nil
+}
+
+// newEntryPublicationKey is the capture's storage identity: this session, the
+// intent's position and the command as discriminator (d-tac-n47).
+func (w *WorkflowSession) newEntryPublicationKey(intent *engine.MutationIntent) PublicationKey {
+	return PublicationKey{Session: w.ID(), Sequence: intent.Ref, Discriminator: intent.Command}
+}
+
+// reportWorkflowNewEntryEffects reports the capture's entry as published,
+// absent, or unknown when its store cannot answer (d-tac-7mh).
+func (w *WorkflowSession) reportWorkflowNewEntryEffects(ctx *engine.Context) ([]engine.Effect, error) {
+	if ctx.Intent == nil {
+		return nil, fmt.Errorf("newEntry effects require a recorded invocation")
+	}
+	entryID := ctx.Intent.Values["entryId"]
+	target := MutationTarget{Project: ProjectID(ctx.Intent.Values["project"]), Branch: ctx.Intent.Values["branch"]}
+	state := "unknown"
+	exists, err := w.app.entryPublicationExists(w.ctx, w.identity, target, w.newEntryPublicationKey(ctx.Intent), entryID)
+	switch {
+	case err != nil:
+		slogutils.FromContext(w.ctx).Info("publication lookup for cancelled capture failed", "entry", entryID, "error", err)
+	case exists:
+		state = "published"
+	default:
+		state = "absent"
+	}
+	return []engine.Effect{{Kind: "entry", ID: entryID, State: state}}, nil
 }
 
 func (w *WorkflowSession) stagedAt(position uint64) (map[string]string, error) {

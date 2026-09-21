@@ -483,6 +483,14 @@ func (s *Session) serveWith(inst *Instance, fullDraft bool) (*Serve, error) {
 		return nil, fmt.Errorf("instance %s: step %q not found", inst.ID, inst.Step)
 	}
 	sv.Step = step.ID
+	if pending := s.PendingMutation(); pending != nil && pending.Instance == inst.ID {
+		// Only retry or cancel can advance here, so the step's unit, schema
+		// and gate are withheld (d-tac-t6u).
+		sv.Goal = PendingOperationGoal
+		sv.Instructions = PendingOperationInstructions
+		sv.Sizes = []PartSize{{Part: "operation", Bytes: len(sv.Instructions)}}
+		return sv, nil
+	}
 	sv.ReportSchema = inst.Spec.ReportSchemaForStep(step)
 	sv.Missing = s.missingFields(inst, step)
 

@@ -15,20 +15,60 @@ type MutationIntent struct {
 	Values   map[string]string
 }
 
-// OperationError carries the exact continuation of a durably recorded invocation.
+// OperationError is a recorded invocation that did not finish; the intent stays
+// pending and Err is this attempt's diagnosis. Served as a position, not an
+// error (d-tac-qws).
 type OperationError struct {
 	Intent MutationIntent
 	Err    error
 }
 
 func (e *OperationError) Error() string {
-	return fmt.Sprintf("%v; %s", e.Err, e.Intent.ContinuationInstructions())
+	return fmt.Sprintf("operation %q did not finish: %v", e.Intent.Command, e.Err)
 }
 func (e *OperationError) Unwrap() error { return e.Err }
 
-func (m MutationIntent) ContinuationInstructions() string {
-	return fmt.Sprintf("operation %q recorded values %v; retry with next(instance=%q, retry_ref=%d) or cancel with next(instance=%q, cancel_ref=%d), without resending the report. Retry uses the recorded input and identifiers. Cancel leaves existing or uncertain effects in place.", m.Command, m.Values, m.Instance, m.Ref, m.Instance, m.Ref)
+// PendingOperationError refuses any transition but retry or cancel while an
+// operation is unfinished (d-tac-t6u).
+type PendingOperationError struct {
+	Intent MutationIntent
 }
+
+func (e *PendingOperationError) Error() string {
+	return fmt.Sprintf("operation %q is unfinished; only its retry or cancellation is accepted", e.Intent.Command)
+}
+
+// Effect is one thing a recorded invocation left, in the operation's own
+// vocabulary (d-tac-7mh).
+type Effect struct {
+	Kind  string
+	ID    string
+	State string
+}
+
+// OperationEffects asks the intent's command what it left; a command without
+// a report leaves only its recorded values.
+func (s *Session) OperationEffects(intent MutationIntent) ([]Effect, error) {
+	cmd, ok := s.engine.Registry.Command(intent.Command)
+	if !ok {
+		return nil, fmt.Errorf("operation %q is not a registered command", intent.Command)
+	}
+	if cmd.Effects == nil {
+		return nil, nil
+	}
+	inst, ok := s.Instance(intent.Instance)
+	if !ok {
+		return nil, fmt.Errorf("instance %q not found", intent.Instance)
+	}
+	intent.Values = maps.Clone(intent.Values)
+	return cmd.Effects(&Context{Instance: inst.ID, Intent: &intent, Store: inst.Store, Step: intent.Step, Reads: s.reads})
+}
+
+// The pending-operation serve's goal and its only prose, fixed by d-tac-qws.
+const (
+	PendingOperationGoal         = "retry the unfinished operation, or cancel it to return to the preceding interaction"
+	PendingOperationInstructions = "This operation did not finish. Tell the user in a sentence. Retry, saying so, when trying again can help; when it cannot, or has stopped helping, the user decides. It can stay pending. Retry is safe: it reuses the recorded input, and effects already applied are recognized, not repeated. Cancel leaves what exists in place."
+)
 
 const MutationCancelled = "cancelled"
 
@@ -59,7 +99,7 @@ func (s *Session) PendingMutation() *MutationIntent {
 }
 
 func (s *Session) pendingError() error {
-	return &OperationError{Intent: *s.intent, Err: fmt.Errorf("the session has unfinished operation %s", s.intent.Command)}
+	return &PendingOperationError{Intent: *s.intent}
 }
 
 func (s *Session) checkProgression() error {

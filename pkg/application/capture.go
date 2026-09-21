@@ -59,6 +59,30 @@ func (a *Application) PreflightEntry(ctx context.Context, identity RequestIdenti
 	return result, nil
 }
 
+// entryPublicationExists reports whether a committed publication exists under
+// the key, reading the target's store without changing it.
+func (a *Application) entryPublicationExists(ctx context.Context, identity RequestIdentity, target MutationTarget, key PublicationKey, entryID string) (exists bool, err error) {
+	_, runtime, err := a.resolve(ctx, identity, target.Project, AccessRead)
+	if err != nil {
+		return false, err
+	}
+	target, err = resolveMutationTarget(runtime, target)
+	if err != nil {
+		return false, err
+	}
+	acquired, err := runtime.acquire(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	defer func() { err = errors.Join(err, acquired.Release()) }()
+	publisher, ok := acquired.Graph.(EntryPublicationStore)
+	if !ok {
+		return false, fmt.Errorf("entry publication is not configured for project %s", target.Project)
+	}
+	_, exists, err = publisher.LookupEntryPublication(ctx, key, entryID)
+	return exists, err
+}
+
 // CreateEntry requires the EntryID, Publication and attachment references recorded
 // for this invocation. It returns a prior publication before preparing again;
 // summary generation may repeat until publication succeeds. Preflight acceptance
