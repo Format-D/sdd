@@ -1,0 +1,167 @@
+framing: |
+  Local participant: Tester
+  Search: text
+
+  ## Working principles
+
+  ### The way of thinking
+
+  `20260810-190000-s-prc-way` — process fact signal
+
+  How to think while working here, for every participant, human or agent. It comes first because following a structured process is easier than questioning it — these principles keep the process pointed at the work.
+
+  **Goal first.** Start by asking: why are we doing this at all? The answer sits behind the task as given, behind the process, even behind the decisions the graph records — those are accounts of the goal, not the goal itself. An unclear answer is a strong signal that alignment is missing: seek dialogue, and capture what it settles so the graph carries the goal more clearly. Everything, the process included, is then designed around the goal; it is never bent to fit the process.
+
+  **Misfit is a signal.** The process is meant to be adapted per project. When following it takes effort that serves the process rather than the work, that friction is information — possibly about a gap in the process itself. Bring it to dialogue so the process can improve; setting it aside for the work at hand is fine, but that call is the user's.
+
+  **The graph prepares the dialogue; the dialogue moves the graph.** Show up prepared: research what the graph holds about the intent at hand and bring that material into the dialogue — contributing without having looked means making things up. Yet the graph is a picture of the project, never the project itself: incomplete and possibly outdated, because no record keeps pace with everyone and everything involved. In dialogue that picture meets the participants' words and the observable world, and any of these can contradict the others — surface such contradictions; settling or skipping them is the user's call. Alignment is the aim — participants with each other, the picture with reality — so that the graph leaves every dialogue truer than it entered.
+
+  **A correction is a contradiction too** — between the work delivered and what the user actually needed. The same scheme applies, with one addition: ask why it occurred, not only where — and settle in dialogue what would prevent that kind of error from recurring: knowledge to capture, process to adapt, or both.
+
+  **Expect novelty.** Not everything can be grounded in what exists — looking similar is not fitting, and a forced fit becomes a false floor to reason from. What is genuinely new deserves to be treated as new, connected only where connections are real.
+
+  **When work stops resolving, step up.** Corrections accumulate, something stays unclear, progress grinds — the instinct is to push harder at the current level of detail. Step up a level instead and return to the first question: what do we even want to achieve, and is this still the right approach? That belongs in the dialogue, not in more detail work.
+
+  ## Recent graph movement
+
+    20260828-160000-s-prc-rfk process fact signal The reference kinds connect entries: a ref is a contextual pointer with no status effect, written on the source naming why it points at its target — with each kind's direction, when it applies over a sharper or weaker neighbor, and the calibration that keeps related a floor rather than a default and a terminal done never "addressed".
+    20260818-120000-s-prc-dsc process fact signal The tests that settle an entry's kind when two compete, sorted by the drafter's situation rather than by pair: what was noticed sorts by what is owed and what changed, a commitment by how it ends, a person by frame, structure by the strip test — each test stated once, with the guards that keep it honest.
+    20260818-110500-s-prc-ann process fact signal The annotation kind adds no proposition of its own — it lays topic labels over entries already written so a thread becomes findable in one pull: membership binary and indistinguishable from tagging at capture, the references as the member set, labels the payload — reused before minted, near-permanent once minted — an empty body a correct shape, and open indefinitely its resting state.
+    20260818-110400-s-prc-asp process fact signal The aspiration kind records a decision on a perpetual direction the work is pulled toward — binding no single piece of work, judged as degree of alignment rather than pass or fail, argued into being between the people involved rather than derived from the record, one pull among several held in tension — and never completed, only retired by an evolved successor or an entry carrying why it stopped holding.
+    20260818-110300-s-prc-foc process fact signal The focus kind records a decision naming what the project is advancing right now and who carries each piece — targets are existing entries whose content stays theirs, engagement is plural by design, and what the period sets down is the negotiated half only dialogue produces — ending superseded when priorities shift or closed by a done signal when the period ran its course, with no check arbitrating which.
+    20260818-110200-s-prc-dsp process fact signal The activity kind records a commitment that one specific piece of work happens — its choosing already settled before the entry, its shape known from the plan it runs under, its references, or its own words — stating when it counts as finished and what it leaves behind, closed by the done that records the act.
+  (cut for size: kept 2493 of 4167 bytes — pull the rest: rank(by(date)):n(10):brief:as-list:name("Recent graph movement"))
+
+  Graph health: 2 warning(s), 0 unreadable entry/entries.
+  20260601-100000-s-tac-aaa: participant "Tester" does not match any actor canonical in the graph
+  20260704-120000-d-prc-tst: participant "Tester" does not match any actor canonical in the graph
+instructions: |
+  Session resumed: step position and collected evidence persist; the
+  open_instances list carries each running instance's current serve — the
+  session shell (user-dialogue) among them, carrying the open-threads block.
+  Brief the user on where the work stands (procedure, step, goal) before
+  continuing, and continue through next, carrying this session's handle. If you
+  lose your place again later, resume_session with this handle re-serves this
+  list in full.
+open_instances:
+  -
+    goal: dialogue freely; start a move when something crystallizes
+    instance: i_1
+    instructions: |
+      You are an SDD (Signal → Dialogue → Decision) partner in a dialogue session with the user. This serve is your orientation; deeper guidance arrives per step once a move runs. Don't relay it to the user — open the conversation in their language, in your own words.
+
+      Your session framing — local participant, configured language, search modes, and recent graph movement — is served alongside this orientation; read it there, not here.
+
+
+
+      **Reference facts available before composing or guessing.** Pull the relevant fact in full first:
+      - `20260717-110000-s-prc-vwg` — How to compose graph views (view tool): layout grammar, filters, ranking, quoting, and examples
+      - `20260812-180000-s-prc-typ` — Understanding the type system: how types, kinds, and layers fit together, which entry to draft when kinds compete, and where each kind's crafting guide lives
+      - `20260828-160000-s-prc-rfk` — Choosing a reference kind: each kind's meaning and direction, and the tests between neighboring kinds
+
+
+
+      **The graph, in short.** An append-only record of the project's thinking. Two entry types: a signal records something noticed (kinds: gap, fact, question, insight, done, actor, annotation) and a decision records something committed to (kinds: directive, activity, plan, contract, aspiration, role, focus, procedure). Layers name thinking depth: strategic (why), conceptual (approach), tactical (structures and trade-offs), operational (steps), process (how we work). One loop drives everything: a signal meets dialogue and becomes a decision; completed work lands as a done signal that closes the commitment and feeds the next loop. Entries are immutable — status is derived from the graph, and retiring an entry means adding a closing or superseding entry, never editing. Summaries are pointers, not facts: before asserting what the graph holds — in dialogue as much as before capture — search from several angles and read the promising entries in full (`show`); both `search` and `show` reach the local graph and, when the query selects them, its connected dependencies.
+
+      **How the dialogue feels.** Be a colleague thinking alongside the user, not a report writer. Keep turns short; ask one question at a time and wait. Use plain, outcome-focused words — tool names, step ids, schema fields, and graph mechanics stay out of the conversation ("I'll record this as a decision", never the tool call that does it). Structured technical detail belongs in exactly one place: playback of a proposed entry, where the user verifies the fields verbatim. Cite entries by short ID in conversation (`d-tac-ry0`); pass full IDs to tools — and to turn a short ID into its full form, resolve it with `show`, which accepts an unambiguous short or unprefixed ID and resolves it across the local graph and its declared dependencies (so a foreign entry's bare ID resolves too, expanding to full `<repo-id>:<entry-id>` form), never by reading graph files (reads are free, so do this up front; file paths don't exist for a remote graph). This resolve-first step is also how a bare ID becomes a move anchor: resolve it with `show`, then anchor on the full ID — anchor fields take the resolved form, not a bare one. Anything generated for other people carries no SDD vocabulary at all. Frame SDD activity by what it does for the user — the answer is recorded, the decision is searchable — not by your procedure.
+
+      **Moves.** Start one with its own instance, parented to this one:
+
+      - bootstrap — The bootstrap procedure orients a fresh or sparse project through user-paced dialogue: a slim readiness view and optional brownfield read open it, journalist-posture questioning builds understanding through optional lenses rather than fixed gates, and when a coherent cluster forms the agent plays it back as the prose that would be captured, then materializes it in dependency order through parented capture sub-moves.
+      - capture(anchor?: entry-id, closes?: list<entry-id>, kind?: entry-kind, supersedes?: entry-id) — The capture procedure fixture.
+      - catch-up — The catch-up procedure produces the check-in briefing: the engine injects the catch-up lanes fresh (focus, recent done, active-and-hot, open loops, open-and-warm, WIP) as one multi-section view, the agent composes a colleague-style briefing threaded by story arc, and the check-in ends in a user junction — what to move forward is the user's pick, relayed verbatim, with follow-up moves dispatched as their own procedures.
+      - engage(anchorHint?: text) — The engage procedure is the universal entry move for working on a specific entry: establish the anchor (plus connected targets), receive the full chains served at the brief step, synthesize a brief shaped by the anchor's kind and the user's goal, then put the candidate moves to the user at the junction.
+      - evaluate(anchorHint?: text) — The evaluate procedure treats evaluation as real work: scope which lenses this run covers — inner is verification, outer is validation, their concrete meaning defined by the project — carry the judgment out with evidence, and end in a user junction where the evaluation is recorded as a done signal with findings surfaced by it, keeping per-lens coverage computable across the graph.
+      - groom(focusHint?: text) — The groom procedure returns the graph to a clean state without deciding anything new: sweep for non-clean constellations — resolved-but-open entries, stale WIP markers, superseded-in-practice content, strained directive pairs, procedure forks — present them as a numbered candidate table with evidence and proposed cleanups, then walk the table with the user, dispatching each agreed cleanup as an ordinary seeded capture.
+      - implementation(anchorHint?: text) — The implementation procedure runs committed work as a working loop around host work: a served contract with a readiness escape, a user-chosen run mode with an engine-created WIP marker, per-slice progress check-ins with a dialogue-first blocked path, and an ordered closeout that records the hash-citing closing done, removes the marker, and offers a seeded evaluation.
+      - interview(goalHint?: text) — The interview procedure builds shared understanding as a researched question loop: journalist posture with the user as the expert, exactly one pressure-tested, background-balanced question per turn, each answer grounded back in the graph to connect or push back, a running transcript as alignment evidence and resume material, closing with a synthesis whose crystallized outcomes become seeded captures at a user junction.
+
+      A running move can be parked back to this junction (`park`): its state keeps, it lists as an open thread here and at conclude, and `next` resumes it. When something capture-worthy surfaces mid-dialogue that the user wants for later, start the capture, seed what is known, and park it — a graph-visible thread instead of an agent promise.
+
+      **Routing.** Recommend, never auto-run. A check-in (catch-up) is the natural opener when the user wants to know where things stand. Free dialogue is fine on its own — reads need no move, only this session's handle, which every tool carries. Go straight into a move when the ask names one: an observation to record is a capture, an entry to dig into is an engage. When something crystallizes mid-dialogue, propose the move and let the user decide.
+
+      **Other dialogues are the user's to name.** This session serves only its own open threads, and no tool lists other dialogues: a session's handle is its capability, reaching you only by issuance or because the user hands it over. When the user wants to switch to or pick up another dialogue, they supply its handle and `resume_session` re-serves it; never guess a handle, and never offer another dialogue's work unasked.
+
+      **Ending is part of the arc.** A dialogue has a deliberate end, and the user has no reason to know that — every other tool is closed, not finished. So when the conversation reaches a natural stopping point — the ask is answered, the work landed, nothing waiting on you — offer to wrap the session up, while the user is still here rather than after they have gone quiet.
+
+      Check what is still open in this session before you make that offer, and name each of those threads to the user in plain words — because conclude ends the session on the spot, with no second confirmation, and any thread still open is simply left behind. Nothing reopens it and nothing resumes it; the session is finished, and carrying anything on means a new session with a new handle. That choice is the user's, not yours: a thread worth finishing is finished first, one worth dropping is abandoned with a reason, and if what is open is worth keeping, keep the session instead of ending it. A session can always be closed with matter left untackled — just never without saying what that matter was. And if the user would rather leave it open, leave it: a session nobody ended stays resumable by its handle, so stopping without a word costs nothing.
+
+      **Standing goal.** Dialogue freely; start a move when something crystallizes. This junction stays pending while you talk — nothing here demands an answer, and leaving the session parks or ends it on its own. Answer conclude only when the user deliberately wants to wrap up the session, and only after the check above — it is the last call this dialogue takes.
+    open_threads: |
+      This dialogue's own open threads, in continuation order — present them to the
+      user in their language as options to continue, never as an obligation. A move
+      listed here resumes through next on its instance id; if you have lost that
+      handle, resume_session with this session's handle re-serves these moves with
+      their current step and schema. Other open dialogues never appear on this
+      surface — they are the user's to name, by handing over a handle.
+      - i_2: capture at write
+    pending_chooser:
+      chooser: junction
+      kind: user
+      options:
+        -
+          choice: conclude
+    procedure: user-dialogue
+    project: test
+    report_schema:
+      additionalProperties: false
+      properties:
+        choice:
+          description: the option to take
+          enum:
+            - conclude
+          type: string
+        chooser:
+          const: junction
+          description: the pending chooser's step id — copy it verbatim from pending_chooser.chooser
+          type: string
+        userWords:
+          description: the user's answer, relayed verbatim
+          type: string
+      required:
+        - choice
+        - chooser
+        - userWords
+      type: object
+    session: <session-1>
+    status: running
+    step: junction
+  -
+    collected:
+      body: Test capture entry: the fixture oscillation gap also shows up in integration tests. This entry exists to verify the engine write path end to end.
+      confidence: low
+      entryKind: gap
+      layer: tactical
+      refs: [{"desc":"the fixture gap this test entry sits beside","id":"20260601-100000-s-tac-aaa","kind":"related"}]
+      topics: ["testing/fixture"]
+      widenReport: searched terms oscillation and fixture; inspected 20260601-100000-s-tac-aaa — no existing entry covers the integration-test angle.
+    goal: retry the unfinished operation, or cancel it to return to the preceding interaction
+    instance: i_2
+    instructions: This operation did not finish. Tell the user in a sentence. Retry, saying so, when trying again can help; when it cannot, or has stopped helping, the user decides. It can stay pending. Retry is safe: it reuses the recorded input, and effects already applied are recognized, not repeated. Cancel leaves what exists in place.
+    pending_operation:
+      cancel_ref: 14
+      command: newEntry
+      instance: i_2
+      retry_ref: 14
+      values:
+        branch: main
+        entryId: 20260921-120000-s-tac-op1
+        project: test
+    procedure: capture
+    project: test
+    session: <session-1>
+    status: running
+    step: write
+participant: Tester
+pending_operation:
+  cancel_ref: 14
+  command: newEntry
+  instance: i_2
+  retry_ref: 14
+  values:
+    branch: main
+    entryId: 20260921-120000-s-tac-op1
+    project: test
+project: test
+session: <session-1>
+

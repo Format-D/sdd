@@ -1,0 +1,3 @@
+isError: true
+content: operation "newEntry" is unfinished; only its retry or cancellation is accepted
+

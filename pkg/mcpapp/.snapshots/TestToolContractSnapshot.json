@@ -1,0 +1,2630 @@
+[
+  {
+    "description": "Abandon a running move instance (instance, plus session naming the session it belongs to), or tear down a session directly by handle (session alone) — one call, no resume, no framing; the response names the label and discarded threads. Nothing is cleaned up implicitly: held WIP markers are surfaced and left standing for resume or grooming. The session shell concludes through its own junction, never through abandon.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "instance": {
+          "description": "instance handle to abandon (a move); pass session too, naming the session the move belongs to",
+          "type": "string"
+        },
+        "reason": {
+          "description": "why the instance or session is being abandoned",
+          "type": "string"
+        },
+        "session": {
+          "description": "with instance: the attached session the move belongs to (required). Alone: a session handle to tear down directly — no resume, no framing",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "abandon",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "abandoned": {
+          "type": "boolean"
+        },
+        "base_junction": {
+          "additionalProperties": false,
+          "description": "the session shell's current serve — where the dialogue now stands",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "framing": {
+              "type": "string"
+            },
+            "goal": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "open_threads": {
+              "description": "this dialogue's own open threads; other dialogues are never listed here",
+              "type": "string"
+            },
+            "pending_chooser": {
+              "additionalProperties": false,
+              "properties": {
+                "chooser": {
+                  "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "choice": {
+                        "type": "string"
+                      },
+                      "collect": {
+                        "description": "state fields this option carries (suffix ? = optional)",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "choice"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "chooser",
+                "kind",
+                "options"
+              ],
+              "type": [
+                "null",
+                "object"
+              ]
+            },
+            "procedure": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session",
+            "instance",
+            "procedure",
+            "status",
+            "goal"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "discarded_threads": {
+          "description": "open moves discarded with the session (procedure at step)",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "held_markers": {
+          "description": "WIP markers held; left standing — resume later or close via groom",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "label": {
+          "description": "the torn-down session's subject label",
+          "type": "string"
+        },
+        "session": {
+          "description": "the torn-down session, on teardown by handle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "abandoned"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Declare or clear the attached session's durable branch binding. Pass exactly one of branch or clear:true. Setting validates the live registered checkout before changing the session; clearing needs no branch capability.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "branch to bind this session to",
+          "type": "string"
+        },
+        "clear": {
+          "description": "clear the current branch binding",
+          "type": "boolean"
+        },
+        "session": {
+          "description": "session handle this connection is attached to",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "name": "bind_branch",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "the now-effective branch binding; empty after clear",
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Session framing header for the session named by session (required): project, local participant, configured language, available search modes, and actionable recovery notices.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "project": {
+          "description": "project to describe; defaults to the session's home project. Another project must lie in the home project's declared dependency closure and be one the principal can read",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — the header describes that session's project",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "info",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "description": "configured graph language; empty = English",
+          "type": "string"
+        },
+        "participant": {
+          "description": "configured local participant (canonical name)",
+          "type": "string"
+        },
+        "project": {
+          "description": "the session's project ID",
+          "type": "string"
+        },
+        "recovery": {
+          "description": "host-neutral actionable recovery notices; empty when no write awaits explicit recovery",
+          "type": "string"
+        },
+        "search": {
+          "description": "available retrieval modes: text or vector,text",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "search"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Advance a procedure instance in the session named by session (required): send state fields per the served report_schema, or answer a pending chooser with {chooser, choice, userWords?, fields?}. User choosers must carry the user's answer relayed verbatim in userWords. For an unfinished operation, omit report and pass its exact retry_ref to continue or cancel_ref to leave its effects in place and return to the preceding interaction. Other transitions remain blocked until the operation is retried or cancelled. When a move ends, the response carries the session shell's serve — where the dialogue lands.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "cancel_ref": {
+          "description": "exact cancellation reference from a failed operation; leaves effects in place and returns to the preceding interaction; mutually exclusive with report and retry_ref",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "instance": {
+          "description": "instance handle from start_procedure",
+          "type": "string"
+        },
+        "label": {
+          "description": "update the session's subject label when the dialogue's subject has sharpened",
+          "type": "string"
+        },
+        "report": {
+          "additionalProperties": true,
+          "description": "state fields per the served report_schema, or a chooser answer object {chooser, choice, userWords?, fields?}",
+          "type": "object"
+        },
+        "retry_ref": {
+          "description": "exact retry reference from a failed operation; mutually exclusive with report and cancel_ref",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — carry it across context compaction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance"
+      ],
+      "type": "object"
+    },
+    "name": "next",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "base_junction": {
+          "additionalProperties": false,
+          "description": "the session shell's current serve — where the dialogue lands now that this move has ended",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "framing": {
+              "type": "string"
+            },
+            "goal": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "open_threads": {
+              "description": "this dialogue's own open threads; other dialogues are never listed here",
+              "type": "string"
+            },
+            "pending_chooser": {
+              "additionalProperties": false,
+              "properties": {
+                "chooser": {
+                  "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "choice": {
+                        "type": "string"
+                      },
+                      "collect": {
+                        "description": "state fields this option carries (suffix ? = optional)",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "choice"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "chooser",
+                "kind",
+                "options"
+              ],
+              "type": [
+                "null",
+                "object"
+              ]
+            },
+            "procedure": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session",
+            "instance",
+            "procedure",
+            "status",
+            "goal"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "branch": {
+          "description": "the session's declared branch binding",
+          "type": "string"
+        },
+        "cancellation": {
+          "additionalProperties": false,
+          "description": "recorded cancellation: return position and what the operation reports it left",
+          "properties": {
+            "cancel_ref": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "closed": {
+              "description": "true when no interaction preceded the operation and the instance closed instead of returning",
+              "type": "boolean"
+            },
+            "command": {
+              "type": "string"
+            },
+            "effects": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
+            "instance": {
+              "type": "string"
+            },
+            "return_step": {
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "cancel_ref",
+            "command",
+            "closed"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "collected": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "state already collected by this instance — values persist across handover; do not re-derive them",
+          "type": "object"
+        },
+        "execution": {
+          "description": "execution hint for this instance; fork-preferred means the procedure is a task best run in a disposable forked context",
+          "type": "string"
+        },
+        "framing": {
+          "description": "session framing (aspirations, directives, focus, participants); served when its content is new to this connection, omitted while unchanged",
+          "type": "string"
+        },
+        "goal": {
+          "description": "one line: what advances the instance from here",
+          "type": "string"
+        },
+        "instance": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "missing": {
+          "description": "required report fields not yet provided",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "open_threads": {
+          "description": "this dialogue's own open threads, carried on the session shell's serves. Other dialogues are never listed here",
+          "type": "string"
+        },
+        "pending_chooser": {
+          "additionalProperties": false,
+          "properties": {
+            "chooser": {
+              "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+              "type": "string"
+            },
+            "kind": {
+              "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+              "type": "string"
+            },
+            "options": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "choice": {
+                    "type": "string"
+                  },
+                  "collect": {
+                    "description": "state fields this option carries (suffix ? = optional)",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  }
+                },
+                "required": [
+                  "choice"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            }
+          },
+          "required": [
+            "chooser",
+            "kind",
+            "options"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "pending_operation": {
+          "additionalProperties": false,
+          "description": "unfinished recorded operation; only its retry_ref or cancel_ref advances this session",
+          "properties": {
+            "cancel_ref": {
+              "description": "pass as cancel_ref to next, with this instance and no report, to leave its effects in place and return to the preceding interaction",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "command": {
+              "type": "string"
+            },
+            "error": {
+              "description": "why this attempt did not finish; present at the moment of failure only",
+              "type": "string"
+            },
+            "error_code": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "retry_ref": {
+              "description": "pass as retry_ref to next, with this instance and no report, to run the operation again on its recorded input",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "identifiers the operation recorded before it ran",
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "retry_ref",
+            "cancel_ref",
+            "command"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "procedure": {
+          "type": "string"
+        },
+        "produced": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "engine-written results on completion (e.g. the created entry ID)",
+          "type": "object"
+        },
+        "project": {
+          "description": "the project this instance works in — the session's home project unless the move was started in a dependency",
+          "type": "string"
+        },
+        "projects": {
+          "description": "start_session only: the principal's accessible projects, served with status project-required when several exist and none was passed — no session opened yet",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "can_write": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "id": {
+                "description": "project ID; pass as start_session's project",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "can_write"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "report_schema": {
+          "additionalProperties": true,
+          "description": "JSON Schema for the current step's report",
+          "type": "object"
+        },
+        "session": {
+          "description": "session handle (the session ID); sessions survive restarts and resume via resume_session. Pass it to every other tool",
+          "type": "string"
+        },
+        "status": {
+          "description": "running, completed, or abandoned — or project-required from start_session, when a project must be chosen first",
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "vocabulary": {
+          "description": "translation table for non-English graphs: canonical tokens stay English, user-facing narration renders in the configured language; served once per connection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "goal"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Park a running move back to the session junction (session required): state and step position keep, the move lists as an open thread (at junctions and on conclude), and next resumes it. Use it when the user shelves work mid-dialogue — a seeded draft parks as a graph-visible thread instead of living in conversation memory as an agent promise.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "instance": {
+          "description": "running move instance to park",
+          "type": "string"
+        },
+        "note": {
+          "description": "one line on why the move is shelved — carried in the session log for whoever resumes it",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — carry it across context compaction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instance"
+      ],
+      "type": "object"
+    },
+    "name": "park",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "base_junction": {
+          "additionalProperties": false,
+          "description": "the session shell's serve — where the dialogue lands",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "framing": {
+              "type": "string"
+            },
+            "goal": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "open_threads": {
+              "description": "this dialogue's own open threads; other dialogues are never listed here",
+              "type": "string"
+            },
+            "pending_chooser": {
+              "additionalProperties": false,
+              "properties": {
+                "chooser": {
+                  "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "choice": {
+                        "type": "string"
+                      },
+                      "collect": {
+                        "description": "state fields this option carries (suffix ? = optional)",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "choice"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "chooser",
+                "kind",
+                "options"
+              ],
+              "type": [
+                "null",
+                "object"
+              ]
+            },
+            "procedure": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session",
+            "instance",
+            "procedure",
+            "status",
+            "goal"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "instance": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "parked": {
+          "type": "boolean"
+        },
+        "procedure": {
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "parked",
+        "instance",
+        "procedure",
+        "step"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Read an attachment's content, paged, within the session named by session (required): an entry's by ID and filename, or a file staged in the session (before any entry carries it) by handle. Never derive storage paths.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "handle": {
+          "description": "read a file staged in this session (before any entry carries it) by its handle, in the same bounded pages; pass instead of id",
+          "type": "string"
+        },
+        "id": {
+          "description": "full ID of the entry whose attachment to read; omit when reading a staged file by handle",
+          "type": "string"
+        },
+        "max_bytes": {
+          "description": "page size cap; default 65536",
+          "type": "integer"
+        },
+        "name": {
+          "description": "attachment filename; optional when the entry has exactly one",
+          "type": "string"
+        },
+        "offset": {
+          "description": "byte position to continue from (next_offset of the previous page)",
+          "type": "integer"
+        },
+        "project": {
+          "description": "project to read the entry's attachment in; defaults to the session's home project. Another project must lie in the home project's declared dependency closure and be one the principal can read",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — the read runs in that session's project, and a staged file is read from that session",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "read_attachment",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "available": {
+          "description": "the entry's attachment filenames",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "more": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "next_offset": {
+          "type": "integer"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "path": {
+          "description": "absolute filesystem path; present only for local (stdio) clients, which may read the file directly instead of paging",
+          "type": "string"
+        },
+        "total_bytes": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "content",
+        "offset",
+        "total_bytes",
+        "more",
+        "available"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Engine function contracts (predicates, queries, commands) — what procedure spec authors consult. Carries the session handle like every other tool.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "description": "filter: predicate, query, or command",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "registry",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "functions": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "type": "string"
+              },
+              "doc": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "reads": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "writes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "class",
+              "doc"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        }
+      },
+      "required": [
+        "functions"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "The second door, and the compaction escape: re-serve the current position of the session whose handle you present — its framing plus every running move at its current step, each with the report schema to continue it. Presenting the handle is the whole authorization (a handle reaches you only by issuance or by the user handing it over), and it declares that you need re-serving: the served-once memory resets, so the complete position serves in full. Only recorded session state resumes — step position, collected fields, staged files — never another conversation's context. A lost handle is the user's to recover, not yours to guess.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "session": {
+          "description": "the session handle (the session ID) whose current position to re-serve: its framing plus every running move at its current step with the schema to continue it. Presenting the handle is the whole authorization; it also declares that you need re-serving, so the served-once memory resets and the complete position serves in full",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "name": "resume_session",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "description": "the session's declared branch binding",
+          "type": "string"
+        },
+        "cancellation": {
+          "additionalProperties": false,
+          "description": "latest recorded cancellation, included even when its instance is closed or omitted",
+          "properties": {
+            "cancel_ref": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "closed": {
+              "description": "true when no interaction preceded the operation and the instance closed instead of returning",
+              "type": "boolean"
+            },
+            "command": {
+              "type": "string"
+            },
+            "effects": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
+            "instance": {
+              "type": "string"
+            },
+            "return_step": {
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "cancel_ref",
+            "command",
+            "closed"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "framing": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "label": {
+          "description": "the session's subject label, when one was recorded",
+          "type": "string"
+        },
+        "open_instances": {
+          "description": "current serve for every running instance; the session shell's serve carries the open-threads block",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "base_junction": {
+                "additionalProperties": false,
+                "description": "the session shell's current serve — where the dialogue lands now that this move has ended",
+                "properties": {
+                  "branch": {
+                    "type": "string"
+                  },
+                  "framing": {
+                    "type": "string"
+                  },
+                  "goal": {
+                    "type": "string"
+                  },
+                  "instance": {
+                    "type": "string"
+                  },
+                  "instructions": {
+                    "type": "string"
+                  },
+                  "open_threads": {
+                    "description": "this dialogue's own open threads; other dialogues are never listed here",
+                    "type": "string"
+                  },
+                  "pending_chooser": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "chooser": {
+                        "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+                        "type": "string"
+                      },
+                      "kind": {
+                        "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+                        "type": "string"
+                      },
+                      "options": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "choice": {
+                              "type": "string"
+                            },
+                            "collect": {
+                              "description": "state fields this option carries (suffix ? = optional)",
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": [
+                                "null",
+                                "array"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "choice"
+                          ],
+                          "type": "object"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "chooser",
+                      "kind",
+                      "options"
+                    ],
+                    "type": [
+                      "null",
+                      "object"
+                    ]
+                  },
+                  "procedure": {
+                    "type": "string"
+                  },
+                  "session": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  },
+                  "step": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "session",
+                  "instance",
+                  "procedure",
+                  "status",
+                  "goal"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "branch": {
+                "description": "the session's declared branch binding",
+                "type": "string"
+              },
+              "cancellation": {
+                "additionalProperties": false,
+                "description": "recorded cancellation: return position and what the operation reports it left",
+                "properties": {
+                  "cancel_ref": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "closed": {
+                    "description": "true when no interaction preceded the operation and the instance closed instead of returning",
+                    "type": "boolean"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "effects": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "state": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "id",
+                        "state"
+                      ],
+                      "type": "object"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  },
+                  "instance": {
+                    "type": "string"
+                  },
+                  "return_step": {
+                    "type": "string"
+                  },
+                  "values": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "instance",
+                  "cancel_ref",
+                  "command",
+                  "closed"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "collected": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "state already collected by this instance — values persist across handover; do not re-derive them",
+                "type": "object"
+              },
+              "execution": {
+                "description": "execution hint for this instance; fork-preferred means the procedure is a task best run in a disposable forked context",
+                "type": "string"
+              },
+              "framing": {
+                "description": "session framing (aspirations, directives, focus, participants); served when its content is new to this connection, omitted while unchanged",
+                "type": "string"
+              },
+              "goal": {
+                "description": "one line: what advances the instance from here",
+                "type": "string"
+              },
+              "instance": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": "string"
+              },
+              "missing": {
+                "description": "required report fields not yet provided",
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "open_threads": {
+                "description": "this dialogue's own open threads, carried on the session shell's serves. Other dialogues are never listed here",
+                "type": "string"
+              },
+              "pending_chooser": {
+                "additionalProperties": false,
+                "properties": {
+                  "chooser": {
+                    "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+                    "type": "string"
+                  },
+                  "options": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "choice": {
+                          "type": "string"
+                        },
+                        "collect": {
+                          "description": "state fields this option carries (suffix ? = optional)",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": [
+                            "null",
+                            "array"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "choice"
+                      ],
+                      "type": "object"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  }
+                },
+                "required": [
+                  "chooser",
+                  "kind",
+                  "options"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "pending_operation": {
+                "additionalProperties": false,
+                "description": "unfinished recorded operation; only its retry_ref or cancel_ref advances this session",
+                "properties": {
+                  "cancel_ref": {
+                    "description": "pass as cancel_ref to next, with this instance and no report, to leave its effects in place and return to the preceding interaction",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "error": {
+                    "description": "why this attempt did not finish; present at the moment of failure only",
+                    "type": "string"
+                  },
+                  "error_code": {
+                    "type": "string"
+                  },
+                  "instance": {
+                    "type": "string"
+                  },
+                  "retry_ref": {
+                    "description": "pass as retry_ref to next, with this instance and no report, to run the operation again on its recorded input",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "values": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "identifiers the operation recorded before it ran",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "instance",
+                  "retry_ref",
+                  "cancel_ref",
+                  "command"
+                ],
+                "type": [
+                  "null",
+                  "object"
+                ]
+              },
+              "procedure": {
+                "type": "string"
+              },
+              "produced": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "engine-written results on completion (e.g. the created entry ID)",
+                "type": "object"
+              },
+              "project": {
+                "description": "the project this instance works in — the session's home project unless the move was started in a dependency",
+                "type": "string"
+              },
+              "projects": {
+                "description": "start_session only: the principal's accessible projects, served with status project-required when several exist and none was passed — no session opened yet",
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "can_write": {
+                      "type": "boolean"
+                    },
+                    "display_name": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "description": "project ID; pass as start_session's project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "can_write"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "report_schema": {
+                "additionalProperties": true,
+                "description": "JSON Schema for the current step's report",
+                "type": "object"
+              },
+              "session": {
+                "description": "session handle (the session ID); sessions survive restarts and resume via resume_session. Pass it to every other tool",
+                "type": "string"
+              },
+              "status": {
+                "description": "running, completed, or abandoned — or project-required from start_session, when a project must be chosen first",
+                "type": "string"
+              },
+              "step": {
+                "type": "string"
+              },
+              "vocabulary": {
+                "description": "translation table for non-English graphs: canonical tokens stay English, user-facing narration renders in the configured language; served once per connection",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "goal"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "participant": {
+          "type": "string"
+        },
+        "pending_operation": {
+          "additionalProperties": false,
+          "description": "unfinished recorded operation; its instance's serve in open_instances carries the position",
+          "properties": {
+            "cancel_ref": {
+              "description": "pass as cancel_ref to next, with this instance and no report, to leave its effects in place and return to the preceding interaction",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "command": {
+              "type": "string"
+            },
+            "error": {
+              "description": "why this attempt did not finish; present at the moment of failure only",
+              "type": "string"
+            },
+            "error_code": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "retry_ref": {
+              "description": "pass as retry_ref to next, with this instance and no report, to run the operation again on its recorded input",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "identifiers the operation recorded before it ran",
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "retry_ref",
+            "cancel_ref",
+            "command"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "project": {
+          "description": "the project this session is bound to",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle (the session ID)",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session",
+        "open_instances"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Search graph entries: terms (text/regex), query (semantic phrase), or both (hybrid). A free read within the session named by session (required): no move needed, never blocked by procedure state; it runs in that session's project and branch.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "all_repos": {
+          "description": "also search every connected repo",
+          "type": "boolean"
+        },
+        "include_superseded": {
+          "type": "boolean"
+        },
+        "includes_revision": {
+          "description": "require a selected revision containing this successful write",
+          "type": "string"
+        },
+        "kind": {
+          "description": "filter: entry kind",
+          "type": "string"
+        },
+        "layer": {
+          "description": "filter: stg, cpt, tac, ops, prc",
+          "type": "string"
+        },
+        "limit": {
+          "description": "hit cap; default 8",
+          "type": "integer"
+        },
+        "max_citations": {
+          "description": "citation snippet lines per entry; omitted = 1 (the strongest matching chunk, the match evidence), 0 = headers only",
+          "type": [
+            "null",
+            "integer"
+          ]
+        },
+        "project": {
+          "description": "project to read in; defaults to the session's home project. Another project must lie in the home project's declared dependency closure and be one the principal can read",
+          "type": "string"
+        },
+        "query": {
+          "description": "vector mode: free-form phrase (requires a configured embedding provider); both together run hybrid",
+          "type": "string"
+        },
+        "repos": {
+          "description": "also search these connected repos by repo-id (additive to the local graph)",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — the read runs in that session's project and branch",
+          "type": "string"
+        },
+        "terms": {
+          "description": "text mode: regex terms combined with AND",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "type": {
+          "description": "filter: s/signal or d/decision",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "search",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "coverage": {
+          "description": "published entry coverage for each fixed search snapshot",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "complete": {
+                "type": "boolean"
+              },
+              "project": {
+                "type": "string"
+              },
+              "published": {
+                "type": "integer"
+              },
+              "required": {
+                "type": "integer"
+              },
+              "revision": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "project",
+              "revision",
+              "required",
+              "published",
+              "complete"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "notice": {
+          "description": "readable incomplete-indexing notice",
+          "type": "string"
+        },
+        "results": {
+          "description": "matching entries with citations",
+          "type": "string"
+        }
+      },
+      "required": [
+        "results"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Read entries in full with their upstream and downstream reference chains, within the session named by session (required). Use whenever the dialogue touches a specific entry — summaries are pointers, not facts.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "down": {
+          "description": "downstream chain depth; omitted = default 1, 0 = no downstream",
+          "type": [
+            "null",
+            "integer"
+          ]
+        },
+        "ids": {
+          "description": "entry IDs to show; accepts an unambiguous short ID ({type}-{layer}-{suffix}) and resolves it to the full entry",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "project": {
+          "description": "project to read in; defaults to the session's home project. Another project must lie in the home project's declared dependency closure and be one the principal can read",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — the read runs in that session's project and branch",
+          "type": "string"
+        },
+        "up": {
+          "description": "upstream chain depth; omitted = default 2, 0 = no upstream",
+          "type": [
+            "null",
+            "integer"
+          ]
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "type": "object"
+    },
+    "name": "show",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Stage a file into the session scratch (session required) and get back a handle to pass in a report's attachments field, or amend what is already staged: with patches, the file named by name is edited in place through atomic search-replace pairs instead of re-staging it whole. Never a graph write — the write gate materializes staged files with the entry.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "description": "file content to stage (UTF-8 text)",
+          "type": "string"
+        },
+        "name": {
+          "description": "target filename (plain name, no paths)",
+          "type": "string"
+        },
+        "patches": {
+          "description": "edit the already-staged file named by name in place: ordered exact search-replace pairs applied atomically — each old must match exactly once, a failing pair refuses the whole edit. Pass instead of content/path",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "new": {
+                "description": "replacement text; empty deletes the old text",
+                "type": "string"
+              },
+              "old": {
+                "description": "exact text to replace — must match exactly once in the file as it stands when this pair applies",
+                "type": "string"
+              }
+            },
+            "required": [
+              "old",
+              "new"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "path": {
+          "description": "local file path to stage instead of inline content",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — carry it across context compaction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "stage_attachment",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "handle": {
+          "description": "attachment handle; pass it in a report's attachments field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "handle"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Start a procedure instance (a playbook move such as capture) in the session named by session (required). Returns the current step's instructions, the report schema to answer with, and the goal that advances it. This is the only path that leads to graph writes — writes happen inside procedure transitions, never through a direct tool.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical": {
+          "description": "the procedure to start, by its stable name (e.g. capture)",
+          "type": "string"
+        },
+        "label": {
+          "description": "short single-line subject label for the session (the dialogue); set it early, update when the subject sharpens",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "description": "typed start inputs per the procedure's declaration: declared params, plus any declared state field the caller wants to seed at start (e.g. a known anchor)",
+          "type": "object"
+        },
+        "parent": {
+          "description": "instance handle of the spawning instance, when this is a sub-move (e.g. a capture dispatched from an engage); records lineage in the session log",
+          "type": "string"
+        },
+        "project": {
+          "description": "project the move works in, when not the session's home project: it must lie in the home project's declared dependency closure and be one the principal can read. Omitted, a foreign anchor selects its project, else the parent's, else the home project",
+          "type": "string"
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — carry it across context compaction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical"
+      ],
+      "type": "object"
+    },
+    "name": "start_procedure",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "base_junction": {
+          "additionalProperties": false,
+          "description": "the session shell's current serve — where the dialogue lands now that this move has ended",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "framing": {
+              "type": "string"
+            },
+            "goal": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "open_threads": {
+              "description": "this dialogue's own open threads; other dialogues are never listed here",
+              "type": "string"
+            },
+            "pending_chooser": {
+              "additionalProperties": false,
+              "properties": {
+                "chooser": {
+                  "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "choice": {
+                        "type": "string"
+                      },
+                      "collect": {
+                        "description": "state fields this option carries (suffix ? = optional)",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "choice"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "chooser",
+                "kind",
+                "options"
+              ],
+              "type": [
+                "null",
+                "object"
+              ]
+            },
+            "procedure": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session",
+            "instance",
+            "procedure",
+            "status",
+            "goal"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "branch": {
+          "description": "the session's declared branch binding",
+          "type": "string"
+        },
+        "cancellation": {
+          "additionalProperties": false,
+          "description": "recorded cancellation: return position and what the operation reports it left",
+          "properties": {
+            "cancel_ref": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "closed": {
+              "description": "true when no interaction preceded the operation and the instance closed instead of returning",
+              "type": "boolean"
+            },
+            "command": {
+              "type": "string"
+            },
+            "effects": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
+            "instance": {
+              "type": "string"
+            },
+            "return_step": {
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "cancel_ref",
+            "command",
+            "closed"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "collected": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "state already collected by this instance — values persist across handover; do not re-derive them",
+          "type": "object"
+        },
+        "execution": {
+          "description": "execution hint for this instance; fork-preferred means the procedure is a task best run in a disposable forked context",
+          "type": "string"
+        },
+        "framing": {
+          "description": "session framing (aspirations, directives, focus, participants); served when its content is new to this connection, omitted while unchanged",
+          "type": "string"
+        },
+        "goal": {
+          "description": "one line: what advances the instance from here",
+          "type": "string"
+        },
+        "instance": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "missing": {
+          "description": "required report fields not yet provided",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "open_threads": {
+          "description": "this dialogue's own open threads, carried on the session shell's serves. Other dialogues are never listed here",
+          "type": "string"
+        },
+        "pending_chooser": {
+          "additionalProperties": false,
+          "properties": {
+            "chooser": {
+              "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+              "type": "string"
+            },
+            "kind": {
+              "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+              "type": "string"
+            },
+            "options": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "choice": {
+                    "type": "string"
+                  },
+                  "collect": {
+                    "description": "state fields this option carries (suffix ? = optional)",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  }
+                },
+                "required": [
+                  "choice"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            }
+          },
+          "required": [
+            "chooser",
+            "kind",
+            "options"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "pending_operation": {
+          "additionalProperties": false,
+          "description": "unfinished recorded operation; only its retry_ref or cancel_ref advances this session",
+          "properties": {
+            "cancel_ref": {
+              "description": "pass as cancel_ref to next, with this instance and no report, to leave its effects in place and return to the preceding interaction",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "command": {
+              "type": "string"
+            },
+            "error": {
+              "description": "why this attempt did not finish; present at the moment of failure only",
+              "type": "string"
+            },
+            "error_code": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "retry_ref": {
+              "description": "pass as retry_ref to next, with this instance and no report, to run the operation again on its recorded input",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "identifiers the operation recorded before it ran",
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "retry_ref",
+            "cancel_ref",
+            "command"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "procedure": {
+          "type": "string"
+        },
+        "produced": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "engine-written results on completion (e.g. the created entry ID)",
+          "type": "object"
+        },
+        "project": {
+          "description": "the project this instance works in — the session's home project unless the move was started in a dependency",
+          "type": "string"
+        },
+        "projects": {
+          "description": "start_session only: the principal's accessible projects, served with status project-required when several exist and none was passed — no session opened yet",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "can_write": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "id": {
+                "description": "project ID; pass as start_session's project",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "can_write"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "report_schema": {
+          "additionalProperties": true,
+          "description": "JSON Schema for the current step's report",
+          "type": "object"
+        },
+        "session": {
+          "description": "session handle (the session ID); sessions survive restarts and resume via resume_session. Pass it to every other tool",
+          "type": "string"
+        },
+        "status": {
+          "description": "running, completed, or abandoned — or project-required from start_session, when a project must be chosen first",
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "vocabulary": {
+          "description": "translation table for non-English graphs: canonical tokens stay English, user-facing narration renders in the configured language; served once per connection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "goal"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Open a fresh dialogue session — one of the two doors, and the only tool that takes a project. Auto-starts the session shell (user-dialogue by default) and returns its opening serve: your orientation, the available moves, and the returned session handle. That handle is the dialogue's identity and binds the session to one project — retain it across context compaction and pass it to every other tool, reads included. Pass project when the composition serves several; omitted, a sole accessible project is inferred, and with several the response lists them (status project-required) instead of opening a session. Every call opens a new dialogue under a new handle; to re-serve an existing one, present its handle to resume_session.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "description": "short single-line subject label for the session; set it early, update when the subject sharpens",
+          "type": "string"
+        },
+        "project": {
+          "description": "project to open the session in, by ID. Optional: a composition serving one project infers it; when several are accessible and none is passed, the response lists them under projects instead of starting a session — pick one and call again",
+          "type": "string"
+        },
+        "shell": {
+          "description": "shell procedure to open the session with, by canonical; defaults to user-dialogue",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "start_session",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "base_junction": {
+          "additionalProperties": false,
+          "description": "the session shell's current serve — where the dialogue lands now that this move has ended",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "framing": {
+              "type": "string"
+            },
+            "goal": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "instructions": {
+              "type": "string"
+            },
+            "open_threads": {
+              "description": "this dialogue's own open threads; other dialogues are never listed here",
+              "type": "string"
+            },
+            "pending_chooser": {
+              "additionalProperties": false,
+              "properties": {
+                "chooser": {
+                  "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+                  "type": "string"
+                },
+                "kind": {
+                  "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+                  "type": "string"
+                },
+                "options": {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "choice": {
+                        "type": "string"
+                      },
+                      "collect": {
+                        "description": "state fields this option carries (suffix ? = optional)",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": [
+                          "null",
+                          "array"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "choice"
+                    ],
+                    "type": "object"
+                  },
+                  "type": [
+                    "null",
+                    "array"
+                  ]
+                }
+              },
+              "required": [
+                "chooser",
+                "kind",
+                "options"
+              ],
+              "type": [
+                "null",
+                "object"
+              ]
+            },
+            "procedure": {
+              "type": "string"
+            },
+            "session": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "step": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session",
+            "instance",
+            "procedure",
+            "status",
+            "goal"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "branch": {
+          "description": "the session's declared branch binding",
+          "type": "string"
+        },
+        "cancellation": {
+          "additionalProperties": false,
+          "description": "recorded cancellation: return position and what the operation reports it left",
+          "properties": {
+            "cancel_ref": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "closed": {
+              "description": "true when no interaction preceded the operation and the instance closed instead of returning",
+              "type": "boolean"
+            },
+            "command": {
+              "type": "string"
+            },
+            "effects": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
+            "instance": {
+              "type": "string"
+            },
+            "return_step": {
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "cancel_ref",
+            "command",
+            "closed"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "collected": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "state already collected by this instance — values persist across handover; do not re-derive them",
+          "type": "object"
+        },
+        "execution": {
+          "description": "execution hint for this instance; fork-preferred means the procedure is a task best run in a disposable forked context",
+          "type": "string"
+        },
+        "framing": {
+          "description": "session framing (aspirations, directives, focus, participants); served when its content is new to this connection, omitted while unchanged",
+          "type": "string"
+        },
+        "goal": {
+          "description": "one line: what advances the instance from here",
+          "type": "string"
+        },
+        "instance": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "missing": {
+          "description": "required report fields not yet provided",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "open_threads": {
+          "description": "this dialogue's own open threads, carried on the session shell's serves. Other dialogues are never listed here",
+          "type": "string"
+        },
+        "pending_chooser": {
+          "additionalProperties": false,
+          "properties": {
+            "chooser": {
+              "description": "the pending chooser's step id — the value to put in a chooser answer's chooser field",
+              "type": "string"
+            },
+            "kind": {
+              "description": "who answers: agent (advisory judgment) or user (relay their answer verbatim)",
+              "type": "string"
+            },
+            "options": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "choice": {
+                    "type": "string"
+                  },
+                  "collect": {
+                    "description": "state fields this option carries (suffix ? = optional)",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": [
+                      "null",
+                      "array"
+                    ]
+                  }
+                },
+                "required": [
+                  "choice"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            }
+          },
+          "required": [
+            "chooser",
+            "kind",
+            "options"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "pending_operation": {
+          "additionalProperties": false,
+          "description": "unfinished recorded operation; only its retry_ref or cancel_ref advances this session",
+          "properties": {
+            "cancel_ref": {
+              "description": "pass as cancel_ref to next, with this instance and no report, to leave its effects in place and return to the preceding interaction",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "command": {
+              "type": "string"
+            },
+            "error": {
+              "description": "why this attempt did not finish; present at the moment of failure only",
+              "type": "string"
+            },
+            "error_code": {
+              "type": "string"
+            },
+            "instance": {
+              "type": "string"
+            },
+            "retry_ref": {
+              "description": "pass as retry_ref to next, with this instance and no report, to run the operation again on its recorded input",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "values": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "identifiers the operation recorded before it ran",
+              "type": "object"
+            }
+          },
+          "required": [
+            "instance",
+            "retry_ref",
+            "cancel_ref",
+            "command"
+          ],
+          "type": [
+            "null",
+            "object"
+          ]
+        },
+        "procedure": {
+          "type": "string"
+        },
+        "produced": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "engine-written results on completion (e.g. the created entry ID)",
+          "type": "object"
+        },
+        "project": {
+          "description": "the project this instance works in — the session's home project unless the move was started in a dependency",
+          "type": "string"
+        },
+        "projects": {
+          "description": "start_session only: the principal's accessible projects, served with status project-required when several exist and none was passed — no session opened yet",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "can_write": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "id": {
+                "description": "project ID; pass as start_session's project",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "can_write"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "report_schema": {
+          "additionalProperties": true,
+          "description": "JSON Schema for the current step's report",
+          "type": "object"
+        },
+        "session": {
+          "description": "session handle (the session ID); sessions survive restarts and resume via resume_session. Pass it to every other tool",
+          "type": "string"
+        },
+        "status": {
+          "description": "running, completed, or abandoned — or project-required from start_session, when a project must be chosen first",
+          "type": "string"
+        },
+        "step": {
+          "type": "string"
+        },
+        "vocabulary": {
+          "description": "translation table for non-English graphs: canonical tokens stay English, user-facing narration renders in the configured language; served once per connection",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "goal"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Run an sdd view layout pipeline over the graph — overview sections, topic counts, ranked lists. A free read within the session named by session (required).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "all_repos": {
+          "description": "also render the layout over every connected repo",
+          "type": "boolean"
+        },
+        "layout": {
+          "description": "sdd view layout pipeline, e.g. 'active:as-counts' or 'top(15)'",
+          "type": "string"
+        },
+        "project": {
+          "description": "project to read in; defaults to the session's home project. Another project must lie in the home project's declared dependency closure and be one the principal can read",
+          "type": "string"
+        },
+        "repos": {
+          "description": "also render the layout over these connected repos' graphs (additive to the local graph)",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "session": {
+          "description": "session handle this connection is attached to (from start_session or resume_session); required — the read runs in that session's project and branch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layout"
+      ],
+      "type": "object"
+    },
+    "name": "view",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "hint": {
+          "description": "one-line pointer to the view layout grammar, served once per connection",
+          "type": "string"
+        },
+        "sections": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sections"
+      ],
+      "type": "object"
+    }
+  }
+]

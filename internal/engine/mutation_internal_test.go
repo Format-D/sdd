@@ -2,8 +2,6 @@ package engine
 
 import (
 	"errors"
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/networkteam/sdd/internal/query"
@@ -114,8 +112,8 @@ func TestCancellationReturnsWithoutReexecuting(t *testing.T) {
 			env := newFixtureEnv(t)
 			failure := env.interruptWriteAfter(t, tc.returnStep, tc.reportAtOp)
 			ref, originalID := failure.Intent.Ref, failure.Intent.Values["entryId"]
-			if !strings.Contains(failure.Error(), fmt.Sprintf("cancel_ref=%d", ref)) || !strings.Contains(failure.Error(), originalID) {
-				t.Fatalf("failure must supply cancellation and known identity: %v", failure)
+			if ref == 0 || originalID == "" || failure.Err == nil {
+				t.Fatalf("failure must carry its continuation reference, known identity and cause: %+v", failure)
 			}
 
 			resumed := env.replay(t)
