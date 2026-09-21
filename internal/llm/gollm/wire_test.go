@@ -78,6 +78,61 @@ func TestOllamaRequestWire(t *testing.T) {
 	}
 }
 
+// The openai provider is the one whose target is configurable, so where a
+// request actually lands is a property worth asserting on the bytes: a base URL
+// only serves an OpenAI-compatible gateway if the path is appended to it.
+func TestOpenAIRequestWire(t *testing.T) {
+	var mu sync.Mutex
+	var body map[string]any
+	var path string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		path = r.URL.Path
+		_ = json.Unmarshal(raw, &body)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"SERVED"}}],"usage":{"prompt_tokens":33,"completion_tokens":44}}`))
+	}))
+	defer srv.Close()
+
+	runner, err := gollmrunner.NewRunner(model.LLMConfig{
+		Provider: "openai", Model: "m", Endpoint: srv.URL,
+		APIKeys: map[string]string{"openai": "op-notarealkeyaaaaaaaaaa"},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	res, err := runner.Run(context.Background(), llm.Request{
+		SystemPrompt: "SYSTEM-BLOCK-MARKER",
+		UserPrompt:   "USER-BLOCK-MARKER",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("request keys: %v", keysOf(body))
+
+	if path != "/v1/chat/completions" {
+		t.Errorf("request path = %q, want /v1/chat/completions", path)
+	}
+	// A key OpenAI itself would reject must still reach a gateway that issued it.
+	sent, _ := json.Marshal(body["messages"])
+	for _, marker := range []string{"SYSTEM-BLOCK-MARKER", "USER-BLOCK-MARKER"} {
+		if !strings.Contains(string(sent), marker) {
+			t.Errorf("%s missing from the messages sent: %s", marker, sent)
+		}
+	}
+	if res.Text != "SERVED" {
+		t.Errorf("text = %q, want SERVED", res.Text)
+	}
+	if res.Usage.InputTokens != 33 || res.Usage.OutputTokens != 44 {
+		t.Errorf("usage not parsed: %+v", res.Usage)
+	}
+}
+
 func keysOf(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

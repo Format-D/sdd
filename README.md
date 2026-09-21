@@ -421,6 +421,18 @@ llm:
 ```
 
 ```yaml
+# OpenAI-compatible service, e.g. a gateway
+llm:
+  provider: openai
+  model: glm-5.3-flash
+  endpoint: https://eu.gw.opper.ai/openai
+  api_keys:
+    openai: op-...
+  timeout: 5m
+  rate_limit_rps: 10
+```
+
+```yaml
 # Local Ollama
 llm:
   provider: ollama
@@ -437,6 +449,8 @@ llm:
 ```
 
 Remote providers (`anthropic`, `openai`) get a conservative rate limit applied automatically, biased below tier-1 ceilings so bursty operations like `sdd summarize --all` don't trip 429s. Override with `rate_limit_rps` on higher tiers.
+
+The `openai` provider talks to any service that implements the OpenAI chat completions protocol: set `endpoint` to its base URL and the request goes there instead of to OpenAI. The same URL works with or without a trailing `/v1`. Since the automatic rate limit assumes OpenAI's tier-1 ceilings, set `rate_limit_rps` explicitly for a service that allows more.
 
 ### Embedding provider (vector search)
 
