@@ -243,6 +243,10 @@ type LLMConfig struct {
 	// Concurrency bounds the worker pool for batch operations. Zero means
 	// "use DefaultLLMConcurrency".
 	Concurrency int `yaml:"concurrency,omitempty"`
+	// Endpoint overrides the OpenAI-compatible base URL for the openai
+	// provider. Empty defaults to the OpenAI public endpoint. Useful for a
+	// gateway or a self-hosted service that implements the same protocol.
+	Endpoint string `yaml:"endpoint,omitempty"`
 	// OllamaEndpoint overrides the default Ollama URL for the gollm adapter.
 	OllamaEndpoint string `yaml:"ollama_endpoint,omitempty"`
 	// APIKeys maps provider name to API key. Never belongs in the
@@ -448,6 +452,9 @@ func mergeLLMConfig(base, overlay LLMConfig) LLMConfig {
 	}
 	if overlay.Concurrency != 0 {
 		out.Concurrency = overlay.Concurrency
+	}
+	if overlay.Endpoint != "" {
+		out.Endpoint = overlay.Endpoint
 	}
 	if overlay.OllamaEndpoint != "" {
 		out.OllamaEndpoint = overlay.OllamaEndpoint
