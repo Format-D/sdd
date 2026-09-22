@@ -1,0 +1,45 @@
+cancellation:
+  cancel_ref: 14
+  closed: false
+  command: newEntry
+  effects:
+    -
+      id: 20260921-120000-s-tac-op1
+      kind: entry
+      state: absent
+  instance: i_2
+  return_step: playback
+  values:
+    branch: main
+    entryId: 20260921-120000-s-tac-op1
+    project: test
+goal: put the choice to the user and relay their answer verbatim
+instance: i_2
+instructions: |
+  Cancelled operation "newEntry". Returned to the "playback" interaction without advancing it. It left: entry 20260921-120000-s-tac-op1, absent. Nothing is cleaned up. Confirming again starts a new operation with new identifiers.
+
+  (lanes served earlier this session: playback — resume_session with this session's handle re-serves this position in full)
+pending_chooser:
+  chooser: playback
+  kind: user
+  options:
+    -
+      choice: confirm
+    -
+      choice: adjust
+      collect:
+        - body?
+        - refs?
+        - topics?
+        - confidence?
+        - intent?
+    -
+      choice: abort
+procedure: capture
+project: test
+report_schema:
+  served_earlier: identical to the capture/playback report schema served earlier this session — resume_session with this session's handle re-serves it in full
+session: <session-1>
+status: running
+step: playback
+

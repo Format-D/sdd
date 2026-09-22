@@ -41,6 +41,9 @@ type ApplicationOptions struct {
 	// selected. nil preserves SyncMode preparation. Returning nil claims no
 	// coverage; SDD reads publication afterwards. Callback failures propagate.
 	PrepareSearch func(context.Context, SearchTarget) error
+	// EntrySuffix supplies the random part of a new entry ID; nil draws it
+	// from the system's randomness (d-cpt-t8i).
+	EntrySuffix func(length int) (string, error)
 }
 
 // Application resolves current access and dispatches protocol-neutral SDD
@@ -53,6 +56,7 @@ type Application struct {
 	blobs         StagedBlobStore
 	clock         Clock
 	prepareSearch func(context.Context, SearchTarget) error
+	entrySuffix   func(length int) (string, error)
 }
 
 func NewApplication(options ApplicationOptions) (*Application, error) {
@@ -69,12 +73,17 @@ func NewApplication(options ApplicationOptions) (*Application, error) {
 	if clock == nil {
 		clock = ClockFunc(time.Now)
 	}
+	suffix := options.EntrySuffix
+	if suffix == nil {
+		suffix = model.RandomSuffix
+	}
 	return &Application{
 		access:        options.Access,
 		sessions:      legacyEndStore{options.Sessions},
 		blobs:         options.StagedBlobs,
 		clock:         clock,
 		prepareSearch: options.PrepareSearch,
+		entrySuffix:   suffix,
 	}, nil
 }
 

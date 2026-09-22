@@ -24,6 +24,9 @@ const (
 	ErrorGraphConflict          ErrorCode = "graph_conflict"
 	ErrorMigrationRequired      ErrorCode = "migration_required"
 	ErrorRecoveryRequired       ErrorCode = "recovery_required"
+	// ErrorOperationPending refuses a transition while a recorded operation is
+	// unfinished; only its retry or cancellation is accepted (d-tac-t6u).
+	ErrorOperationPending ErrorCode = "operation_pending"
 )
 
 type ApplicationError struct {

@@ -2,7 +2,6 @@ package mcpapp_test
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bradleyjkemp/cupaloy/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/networkteam/sdd/internal/engine"
@@ -938,15 +938,13 @@ func TestToolContractSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Slice(res.Tools, func(i, j int) bool { return res.Tools[i].Name < res.Tools[j].Name })
-	encoded, err := json.Marshal(res.Tools)
+	// The contract is read back as text: a change shows as a diff of the
+	// tool description or schema that moved, not as a hash (d-cpt-t8i).
+	encoded, err := json.MarshalIndent(res.Tools, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := fmt.Sprintf("%x", sha256.Sum256(encoded))
-	const want = "f8a84f00ad52142f587fcf86275a0404bbdfbd4adb63c488c92f074eda56614c"
-	if got != want {
-		t.Fatalf("MCP tool contract changed: got %s, want %s", got, want)
-	}
+	cupaloy.New(cupaloy.SnapshotFileExtension(".json")).SnapshotT(t, string(encoded))
 }
 
 // TestOrientationListsMoveParamSignatures verifies the shell orientation's

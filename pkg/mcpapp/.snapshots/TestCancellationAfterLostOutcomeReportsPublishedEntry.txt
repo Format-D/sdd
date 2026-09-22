@@ -1,0 +1,123 @@
+cancellation:
+  cancel_ref: 14
+  closed: false
+  command: newEntry
+  effects:
+    -
+      id: 20260921-120000-s-tac-op1
+      kind: entry
+      state: published
+  instance: i_2
+  return_step: playback
+  values:
+    branch: main
+    entryId: 20260921-120000-s-tac-op1
+    project: test
+goal: put the choice to the user and relay their answer verbatim
+instance: i_2
+instructions: |
+  Play back to the user: Test capture entry: the fixture oscillation gap also shows up in integration tests. This entry exists to verify the engine write path end to end.
+
+  Cancelled operation "newEntry". Returned to the "playback" interaction without advancing it. It left: entry 20260921-120000-s-tac-op1, published. Nothing is cleaned up. Confirming again starts a new operation with new identifiers.
+pending_chooser:
+  chooser: playback
+  kind: user
+  options:
+    -
+      choice: confirm
+    -
+      choice: adjust
+      collect:
+        - body?
+        - refs?
+        - topics?
+        - confidence?
+        - intent?
+    -
+      choice: abort
+procedure: capture
+project: test
+report_schema:
+  additionalProperties: false
+  properties:
+    choice:
+      description: the option to take
+      enum:
+        - confirm
+        - adjust
+        - abort
+      type: string
+    chooser:
+      const: playback
+      description: the pending chooser's step id — copy it verbatim from pending_chooser.chooser
+      type: string
+    fields:
+      additionalProperties: false
+      description: state fields the chosen option collects — nested here, not at the top level
+      properties:
+        body:
+          description: entry description; self-describing first sentence
+          type: string
+        confidence:
+          description: honest confidence
+          enum:
+            - high
+            - medium
+            - low
+          type: string
+        intent:
+          anyOf:
+            -
+              enum:
+                - pending
+                - guiding
+                - settled
+              type: string
+            -
+              type: null
+          description: required when entryKind is directive
+        refs:
+          description: each {id, kind, desc?}
+          items:
+            additionalProperties: false
+            properties:
+              desc:
+                type: string
+              id:
+                pattern: ^\d{8}-\d{6}-[sd]-(stg|cpt|tac|ops|prc)-[a-z0-9]+$
+                type: string
+              kind:
+                enum:
+                  - grounded-in
+                  - builds-on
+                  - refines
+                  - addresses
+                  - surfaces
+                  - surfaced-by
+                  - depends-on
+                  - required-by
+                  - related
+                type: string
+            required:
+              - id
+              - kind
+            type: object
+          type: array
+        topics:
+          description: reuse existing labels
+          items:
+            type: string
+          type: array
+      type: object
+    userWords:
+      description: the user's answer, relayed verbatim
+      type: string
+  required:
+    - choice
+    - chooser
+    - userWords
+  type: object
+session: <session-1>
+status: running
+step: playback
+

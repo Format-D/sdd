@@ -1,6 +1,7 @@
 package proctest_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -85,8 +86,9 @@ func requirePendingSessionBlocksProgression(t *testing.T, session *proctest.Sess
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.act(); err == nil || !strings.Contains(err.Error(), "cancel_ref=") {
-				t.Fatalf("pending operation allowed progression or lost its continuation: %v", err)
+			var refused *sdd.ApplicationError
+			if err := tc.act(); err == nil || !errors.As(err, &refused) || refused.Code != sdd.ErrorOperationPending {
+				t.Fatalf("pending operation allowed progression or refused without its code: %v", err)
 			}
 		})
 	}

@@ -1,7 +1,6 @@
 package proctest_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/networkteam/sdd/internal/proctest"
@@ -18,9 +17,12 @@ func TestCapture_CancellationLeavesPublishedEffectsAndAllowsFreshConfirmation(t 
 	draft := captureDraft()
 	draft["attachments"] = []any{handle}
 	session.Report(t, instance, draft)
-	_, failure := session.AnswerErr(t, instance, "playback", "confirm", nil, "publish the observation")
-	if failure == nil || !strings.Contains(failure.Error(), "retry_ref=") || !strings.Contains(failure.Error(), "cancel_ref=") || !strings.Contains(failure.Error(), "retry reuses it") {
-		t.Fatalf("failure must explain both continuations: %v", failure)
+	failed, err := session.AnswerErr(t, instance, "playback", "confirm", nil, "publish the observation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.PendingOperation == nil || failed.PendingOperation.Error == "" || failed.PendingOperation.RetryRef != failed.PendingOperation.CancelRef || failed.ReportSchema != nil {
+		t.Fatalf("a failed operation must serve its pending position with the live error: %+v", failed)
 	}
 	session, resumed := world.Resume(t, session.ID, "cancel-capture-resumed")
 	pending := resumed.PendingOperation
@@ -30,13 +32,14 @@ func TestCapture_CancellationLeavesPublishedEffectsAndAllowsFreshConfirmation(t 
 	originalID := pending.Values["entryId"]
 	proctest.LoadEntry(t, world.GraphDir, originalID)
 	requirePendingSessionBlocksProgression(t, session, other.Instance)
-	serve, err := session.WF.Advance(t.Context(), world.Identity, sdd.WorkflowAdvanceRequest{Instance: instance, CancelRef: pending.CancelRef})
+	serve, err = session.WF.Advance(t.Context(), world.Identity, sdd.WorkflowAdvanceRequest{Instance: instance, CancelRef: pending.CancelRef})
 	if err != nil {
 		t.Fatal(err)
 	}
 	proctest.RequireStep(t, serve, "playback")
-	if serve.Cancellation == nil || serve.Cancellation.Values["entryId"] != originalID || !strings.Contains(serve.Cancellation.Instructions, "leaves them in place") || finalizer.calls != 1 {
-		t.Fatalf("cancellation must report residue without completing it: %+v, finalizers=%d", serve.Cancellation, finalizer.calls)
+	published := sdd.WorkflowEffect{Kind: "entry", ID: originalID, State: "published"}
+	if serve.Cancellation == nil || len(serve.Cancellation.Effects) != 1 || serve.Cancellation.Effects[0] != published || finalizer.calls != 1 {
+		t.Fatalf("cancellation must report the published entry without completing it: %+v, finalizers=%d", serve.Cancellation, finalizer.calls)
 	}
 	requireListedStep(t, session, instance, "playback")
 	session, resumed = world.Resume(t, session.ID, "cancel-response-lost")

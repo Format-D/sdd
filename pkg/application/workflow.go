@@ -86,25 +86,37 @@ type WorkflowChooser struct {
 	Options []WorkflowChooserOption
 }
 
-// WorkflowPendingOperation exposes the continuation already recorded in the session.
+// WorkflowPendingOperation is the structured half of the pending-operation
+// position. Error is live only: a failed attempt appends nothing (d-tac-t6u).
 type WorkflowPendingOperation struct {
-	Instance     string            `json:"instance"`
-	RetryRef     uint64            `json:"retry_ref"`
-	CancelRef    uint64            `json:"cancel_ref"`
-	Command      string            `json:"command"`
-	Values       map[string]string `json:"values,omitempty"`
-	Instructions string            `json:"instructions"`
+	Instance  string
+	RetryRef  uint64
+	CancelRef uint64
+	Command   string
+	Values    map[string]string
+	Error     string
+	// ErrorCode is the application code of the live error, when it carries one.
+	ErrorCode ErrorCode
 }
 
-// WorkflowCancellation reports the recorded return position and effects left in place.
+// WorkflowEffect is one thing the cancelled operation left, in the
+// operation's own words (d-tac-7mh).
+type WorkflowEffect struct {
+	Kind  string
+	ID    string
+	State string
+}
+
+// WorkflowCancellation is a recorded cancellation: the intent it ended, where
+// the instance returned to, and what the operation reports it left.
 type WorkflowCancellation struct {
-	Instance     string            `json:"instance"`
-	CancelRef    uint64            `json:"cancel_ref"`
-	Command      string            `json:"command"`
-	Values       map[string]string `json:"values,omitempty"`
-	ReturnStep   string            `json:"return_step,omitempty"`
-	Closed       bool              `json:"closed"`
-	Instructions string            `json:"instructions"`
+	Instance   string
+	CancelRef  uint64
+	Command    string
+	Values     map[string]string
+	ReturnStep string
+	Closed     bool
+	Effects    []WorkflowEffect
 }
 
 type WorkflowServe struct {
@@ -152,7 +164,7 @@ func (s *WorkflowServe) ReminderInstructions() string {
 		return ""
 	}
 	reminder := fmt.Sprintf("(step %s instructions were served earlier this session — follow them; goal: %s. Lost them to a context compaction? resume_session with this session's handle re-serves this position in full.)", s.Step, s.Goal)
-	return engine.ComposeInstructions(reminder, s.Diagnostics)
+	return s.ComposeInstructions(reminder)
 }
 
 // ComposeInstructions joins host-recomposed unit text (e.g. the deduped lane
@@ -278,7 +290,11 @@ func (a *Application) OpenWorkflow(ctx context.Context, identity RequestIdentity
 	if err := w.setLabel(request.Label); err != nil {
 		return nil, nil, err
 	}
-	return w, w.publicServe(serve), nil
+	public, err := w.publicServe(serve)
+	if err != nil {
+		return nil, nil, err
+	}
+	return w, public, nil
 }
 
 // LoadWorkflow loads an existing session by ID: the session's own record
@@ -511,12 +527,12 @@ func (w *WorkflowSession) Start(ctx context.Context, identity RequestIdentity, r
 	serve, err := w.session.Start(spec, request.Params, parent)
 	w.startProject = ""
 	if err != nil {
-		return nil, workflowOperationError(err)
+		return w.operationOutcome(err)
 	}
 	if err := w.session.SinkErr(); err != nil {
 		return nil, err
 	}
-	return w.publicServe(serve), nil
+	return w.publicServe(serve)
 }
 
 func (w *WorkflowSession) Advance(ctx context.Context, identity RequestIdentity, request WorkflowAdvanceRequest) (*WorkflowServe, error) {
@@ -569,7 +585,7 @@ func (w *WorkflowSession) Advance(ctx context.Context, identity RequestIdentity,
 		serve, err = w.session.Report(request.Instance, request.Report)
 	}
 	if err != nil {
-		return nil, workflowOperationError(err)
+		return w.operationOutcome(err)
 	}
 	// A displaced binding fails its append inside the engine, which stashes the
 	// typed error rather than returning it; surface it here so the first write
@@ -577,15 +593,18 @@ func (w *WorkflowSession) Advance(ctx context.Context, identity RequestIdentity,
 	if err := w.session.SinkErr(); err != nil {
 		return nil, err
 	}
-	result := w.publicServe(serve)
+	result, err := w.publicServe(serve)
+	if err != nil {
+		return nil, err
+	}
 	if serve.Status != engine.StatusRunning {
 		// The shell ending is the dialogue ending: its serve carries the way on
 		// rather than a spent position with nothing to do. Any other instance
 		// ending lands the dialogue back on the shell.
 		if serve.Instance == w.shell {
 			result.Instructions = NewSessionNote
-			if result.Cancellation != nil {
-				result.Instructions += "\n\n" + result.Cancellation.Instructions
+			if serve.Cancellation != nil {
+				result.Instructions += "\n\n" + engine.CancellationNotice(serve.Cancellation)
 			}
 			return result, nil
 		}
@@ -606,7 +625,7 @@ func (w *WorkflowSession) ServeShell(ctx context.Context, identity RequestIdenti
 	if err != nil {
 		return nil, err
 	}
-	return w.publicServe(serve), nil
+	return w.publicServe(serve)
 }
 
 func (w *WorkflowSession) ServeAll(ctx context.Context, identity RequestIdentity) (WorkflowResumeResult, error) {
@@ -615,12 +634,17 @@ func (w *WorkflowSession) ServeAll(ctx context.Context, identity RequestIdentity
 }
 
 func (w *WorkflowSession) resumeResult() (WorkflowResumeResult, error) {
-	result := WorkflowResumeResult{Session: w.ID(), Participant: w.session.Participant, Label: w.session.Label, Branch: w.branch, PendingOperation: w.pendingOperation(), Cancellation: w.cancellation()}
-	if result.PendingOperation != nil {
-		result.Instructions = result.PendingOperation.Instructions
+	cancelled, err := w.session.Cancellation()
+	if err != nil {
+		return WorkflowResumeResult{}, err
 	}
-	if result.Cancellation != nil {
-		result.Instructions = result.Cancellation.Instructions
+	result := WorkflowResumeResult{Session: w.ID(), Participant: w.session.Participant, Label: w.session.Label, Branch: w.branch, PendingOperation: w.pendingOperation(), Cancellation: workflowCancellation(cancelled)}
+	// The notice rides the instance it belongs to; the resume carries it
+	// only when that instance no longer runs (d-tac-t6u).
+	if cancelled != nil {
+		if inst, ok := w.session.Instance(cancelled.Intent.Instance); !ok || inst.Status != engine.StatusRunning {
+			result.Instructions = engine.CancellationNotice(cancelled)
+		}
 	}
 	for _, inst := range w.session.Instances() {
 		if inst.Status != engine.StatusRunning {
@@ -634,7 +658,10 @@ func (w *WorkflowSession) resumeResult() (WorkflowResumeResult, error) {
 		// re-entry contract: a resuming agent sees the values this instance
 		// already holds. It rides the resume path alone — publicServe stays
 		// state-free so door, next, and base-junction serves are unchanged.
-		ws := w.publicServe(serve)
+		ws, err := w.publicServe(serve)
+		if err != nil {
+			return WorkflowResumeResult{}, err
+		}
 		ws.Collected = inst.Store.Collected()
 		result.Open = append(result.Open, *ws)
 	}
@@ -653,7 +680,7 @@ func (w *WorkflowSession) Abandon(ctx context.Context, identity RequestIdentity,
 		}
 	}
 	if err := w.session.Abandon(instance, reason); err != nil {
-		return WorkflowAbandonResult{}, err
+		return WorkflowAbandonResult{}, codedRefusal(err)
 	}
 	if err := w.session.SinkErr(); err != nil {
 		return WorkflowAbandonResult{}, err
@@ -676,7 +703,7 @@ func (w *WorkflowSession) Park(ctx context.Context, identity RequestIdentity, in
 		return WorkflowParkResult{}, fmt.Errorf("instance %q not found in session", instance)
 	}
 	if err := w.session.Park(instance, note); err != nil {
-		return WorkflowParkResult{}, err
+		return WorkflowParkResult{}, codedRefusal(err)
 	}
 	if err := w.session.SinkErr(); err != nil {
 		return WorkflowParkResult{}, err
@@ -1092,7 +1119,7 @@ func (a *Application) AbandonWorkflowSession(ctx context.Context, identity Reque
 			}
 		}
 		if err := w.session.Abandon(inst.ID, reason); err != nil {
-			return WorkflowAbandonResult{}, err
+			return WorkflowAbandonResult{}, codedRefusal(err)
 		}
 	}
 	now := a.now().UTC().Round(0)
@@ -1190,37 +1217,61 @@ func (w *WorkflowSession) pendingOperation() *WorkflowPendingOperation {
 	if intent == nil {
 		return nil
 	}
-	return &WorkflowPendingOperation{Instance: intent.Instance, RetryRef: intent.Ref, CancelRef: intent.Ref, Command: intent.Command, Values: intent.Values, Instructions: intent.ContinuationInstructions() + " " + publicationContinuation}
+	return &WorkflowPendingOperation{Instance: intent.Instance, RetryRef: intent.Ref, CancelRef: intent.Ref, Command: intent.Command, Values: intent.Values}
 }
 
-const publicationContinuation = "When publication already exists, retry reuses it and finishes required completion steps; cancellation leaves it in place."
+// operationOutcome serves a failed operation as its pending position and
+// returns a refused transition as a coded error (d-tac-qws, d-cpt-s2i).
+func (w *WorkflowSession) operationOutcome(err error) (*WorkflowServe, error) {
+	var failed *engine.OperationError
+	if errors.As(err, &failed) {
+		serve, serveErr := w.session.Serve(failed.Intent.Instance)
+		if serveErr != nil {
+			return nil, errors.Join(err, serveErr)
+		}
+		result, serveErr := w.publicServe(serve)
+		if serveErr != nil {
+			return nil, errors.Join(err, serveErr)
+		}
+		if result.PendingOperation == nil {
+			return nil, fmt.Errorf("operation %q failed but its instance serves no pending operation: %w", failed.Intent.Command, err)
+		}
+		result.PendingOperation.Error = failed.Err.Error()
+		var coded *ApplicationError
+		if errors.As(failed.Err, &coded) {
+			result.PendingOperation.ErrorCode = coded.Code
+		}
+		return result, nil
+	}
+	return nil, codedRefusal(err)
+}
 
-func workflowOperationError(err error) error {
-	var operation *engine.OperationError
-	if errors.As(err, &operation) {
-		return fmt.Errorf("%w. %s", err, publicationContinuation)
+// codedRefusal gives a transition refused during an unfinished operation its
+// code; every other error passes through (d-cpt-s2i).
+func codedRefusal(err error) error {
+	var refused *engine.PendingOperationError
+	if errors.As(err, &refused) {
+		return &ApplicationError{Code: ErrorOperationPending, Message: refused.Error(), Cause: refused}
 	}
 	return err
 }
 
-func (w *WorkflowSession) cancellation() *WorkflowCancellation {
-	cancelled := w.session.CancelledMutation()
+func workflowCancellation(cancelled *engine.CancellationServe) *WorkflowCancellation {
 	if cancelled == nil {
 		return nil
 	}
 	intent := cancelled.Intent
-	position := fmt.Sprintf("Returned to %q without advancing it", cancelled.ReturnStep)
-	if cancelled.ReturnStep == "" {
-		position = "Closed the instance because no interaction preceded the operation"
-	}
-	return &WorkflowCancellation{
+	result := &WorkflowCancellation{
 		Instance: intent.Instance, CancelRef: intent.Ref, Command: intent.Command, Values: intent.Values,
-		ReturnStep: cancelled.ReturnStep, Closed: cancelled.ReturnStep == "",
-		Instructions: fmt.Sprintf("Cancelled operation %q at reference %d, recorded values %v. %s. The operation may already have published effects; cancellation leaves them in place and performs no cleanup. Fresh confirmation starts a new operation and allocates any new resources independently.", intent.Command, intent.Ref, intent.Values, position),
+		ReturnStep: cancelled.ReturnStep, Closed: cancelled.Closed,
 	}
+	for _, effect := range cancelled.Effects {
+		result.Effects = append(result.Effects, WorkflowEffect{Kind: effect.Kind, ID: effect.ID, State: effect.State})
+	}
+	return result
 }
 
-func (w *WorkflowSession) publicServe(serve *engine.Serve) *WorkflowServe {
+func (w *WorkflowSession) publicServe(serve *engine.Serve) (*WorkflowServe, error) {
 	result := &WorkflowServe{
 		Session: w.ID(), Project: w.instanceProject(serve.Instance), Branch: w.branch,
 		Instance: serve.Instance, Procedure: serve.Procedure, Status: string(serve.Status),
@@ -1231,14 +1282,8 @@ func (w *WorkflowSession) publicServe(serve *engine.Serve) *WorkflowServe {
 	}
 	if pending := w.pendingOperation(); pending != nil && pending.Instance == serve.Instance {
 		result.PendingOperation = pending
-		result.Diagnostics = append(result.Diagnostics, pending.Instructions)
-		result.Instructions = engine.ComposeInstructions(result.Instructions, []string{pending.Instructions})
 	}
-	if cancelled := w.cancellation(); cancelled != nil && cancelled.Instance == serve.Instance {
-		result.Cancellation = cancelled
-		result.Diagnostics = append(result.Diagnostics, cancelled.Instructions)
-		result.Instructions = engine.ComposeInstructions(result.Instructions, []string{cancelled.Instructions})
-	}
+	result.Cancellation = workflowCancellation(serve.Cancellation)
 	if serve.Chooser != nil {
 		chooser := &WorkflowChooser{Chooser: serve.Chooser.Chooser, Kind: ChooserKind(serve.Chooser.Kind)}
 		for _, option := range serve.Chooser.Options {
@@ -1257,7 +1302,7 @@ func (w *WorkflowSession) publicServe(serve *engine.Serve) *WorkflowServe {
 	if inst, ok := w.session.Instance(serve.Instance); ok && inst.Spec.Class == model.ProcedureClassTask {
 		result.Execution = ExecutionForkPreferred
 	}
-	return result
+	return result, nil
 }
 
 type materializedGraphView struct {

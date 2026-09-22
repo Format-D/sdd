@@ -136,6 +136,9 @@ type Serve struct {
 	// Cuts records every bound that fired on this serve; the engine-owned
 	// cuts lane renders them and the measurement harness reads them.
 	Cuts []truncate.Cut
+	// Cancellation is the current cancellation this serve lands, rendered as
+	// its own lane; nil on every other serve.
+	Cancellation *CancellationServe
 }
 
 // ServeLane is defined in pkg/application/types — the exported surface names
@@ -475,6 +478,15 @@ func (s *Session) serveWith(inst *Instance, fullDraft bool) (*Serve, error) {
 			sv.Sizes = append(sv.Sizes, PartSize{Part: "produced", Bytes: n})
 		}
 		sv.Goal = "the procedure has ended (" + inst.Outcome + ")"
+		if cancelled := s.cancelled; cancelled != nil && cancelled.Intent.Instance == inst.ID {
+			cancellation, err := s.Cancellation()
+			if err != nil {
+				return nil, err
+			}
+			sv.Cancellation = cancellation
+			sv.Instructions = CancellationNotice(cancellation)
+			sv.Lanes = []ServeLane{{Name: "cancellation", Text: sv.Instructions}}
+		}
 		return sv, nil
 	}
 
@@ -483,6 +495,14 @@ func (s *Session) serveWith(inst *Instance, fullDraft bool) (*Serve, error) {
 		return nil, fmt.Errorf("instance %s: step %q not found", inst.ID, inst.Step)
 	}
 	sv.Step = step.ID
+	if pending := s.PendingMutation(); pending != nil && pending.Instance == inst.ID {
+		// Only retry or cancel can advance here, so the step's unit, schema
+		// and gate are withheld (d-tac-t6u).
+		sv.Goal = PendingOperationGoal
+		sv.Instructions = PendingOperationInstructions
+		sv.Sizes = []PartSize{{Part: "operation", Bytes: len(sv.Instructions)}}
+		return sv, nil
+	}
 	sv.ReportSchema = inst.Spec.ReportSchemaForStep(step)
 	sv.Missing = s.missingFields(inst, step)
 
@@ -516,6 +536,14 @@ func (s *Session) serveWith(inst *Instance, fullDraft bool) (*Serve, error) {
 	if len(cuts) > 0 {
 		lanes = append(lanes, ServeLane{Name: "cuts", Text: renderCuts(cuts)})
 		sv.Cuts = cuts
+	}
+	if cancelled := s.cancelled; cancelled != nil && cancelled.Intent.Instance == inst.ID {
+		cancellation, err := s.Cancellation()
+		if err != nil {
+			return nil, err
+		}
+		sv.Cancellation = cancellation
+		lanes = append(lanes, ServeLane{Name: "cancellation", Text: CancellationNotice(cancellation)})
 	}
 	sv.Lanes = lanes
 	for _, lane := range lanes {
