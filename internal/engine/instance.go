@@ -478,6 +478,15 @@ func (s *Session) serveWith(inst *Instance, fullDraft bool) (*Serve, error) {
 			sv.Sizes = append(sv.Sizes, PartSize{Part: "produced", Bytes: n})
 		}
 		sv.Goal = "the procedure has ended (" + inst.Outcome + ")"
+		if cancelled := s.cancelled; cancelled != nil && cancelled.Intent.Instance == inst.ID {
+			cancellation, err := s.Cancellation()
+			if err != nil {
+				return nil, err
+			}
+			sv.Cancellation = cancellation
+			sv.Instructions = CancellationNotice(cancellation)
+			sv.Lanes = []ServeLane{{Name: "cancellation", Text: sv.Instructions}}
+		}
 		return sv, nil
 	}
 

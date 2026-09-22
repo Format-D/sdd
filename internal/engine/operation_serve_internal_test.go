@@ -58,3 +58,20 @@ func TestCancellationIsCurrentUntilNextInteraction(t *testing.T) {
 		t.Fatalf("replay must derive the same: %+v, %v", serve, err)
 	}
 }
+
+// A cancellation with no preceding interaction closes the instance; the serve that closes it still
+// carries the cancellation and its notice, so the caller learns what happened and what was left.
+func TestCancellationWithoutPrecedingInteractionServesOnClosedInstance(t *testing.T) {
+	env := newFixtureEnv(t)
+	ref := env.interruptWriteAfter(t, "", false).Intent.Ref
+	serve, err := env.session.Cancel("i_1", ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serve.Status != StatusAbandoned {
+		t.Fatalf("no preceding interaction: the instance must close, got %s", serve.Status)
+	}
+	if serve.Cancellation == nil || !serve.Cancellation.Closed || serve.Cancellation.Intent.Ref != ref || !hasLane(serve.Lanes, "cancellation") || serve.Instructions == "" {
+		t.Fatalf("the closing serve must carry the cancellation and its notice: %+v", serve)
+	}
+}
