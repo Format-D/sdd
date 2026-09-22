@@ -2,9 +2,9 @@ package engine
 
 import "testing"
 
-func hasLane(lanes []ServeLane, name string) bool {
+func hasCancellationLane(lanes []ServeLane) bool {
 	for _, lane := range lanes {
-		if lane.Name == name {
+		if lane.Name == "cancellation" {
 			return true
 		}
 	}
@@ -40,18 +40,18 @@ func TestCancellationIsCurrentUntilNextInteraction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cancelled.Cancellation == nil || cancelled.Cancellation.Intent.Ref != ref || !hasLane(cancelled.Lanes, "cancellation") {
+	if cancelled.Cancellation == nil || cancelled.Cancellation.Intent.Ref != ref || !hasCancellationLane(cancelled.Lanes) {
 		t.Fatalf("the cancelling serve must carry the cancellation and its lane: %+v", cancelled)
 	}
 	resumed := env.replay(t)
-	if serve, err := resumed.Serve("i_1"); err != nil || serve.Cancellation == nil || !hasLane(serve.Lanes, "cancellation") {
+	if serve, err := resumed.Serve("i_1"); err != nil || serve.Cancellation == nil || !hasCancellationLane(serve.Lanes) {
 		t.Fatalf("a resume before any interaction must still carry the cancellation: %+v, %v", serve, err)
 	}
 	adjusted, err := resumed.Answer("i_1", "playback", "adjust", nil, "adjust the draft")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adjusted.Cancellation != nil || hasLane(adjusted.Lanes, "cancellation") {
+	if adjusted.Cancellation != nil || hasCancellationLane(adjusted.Lanes) {
 		t.Fatalf("an answer on the instance must end the cancellation's currency: %+v", adjusted)
 	}
 	if serve, err := env.replay(t).Serve("i_1"); err != nil || serve.Cancellation != nil {
@@ -71,7 +71,7 @@ func TestCancellationWithoutPrecedingInteractionServesOnClosedInstance(t *testin
 	if serve.Status != StatusAbandoned {
 		t.Fatalf("no preceding interaction: the instance must close, got %s", serve.Status)
 	}
-	if serve.Cancellation == nil || !serve.Cancellation.Closed || serve.Cancellation.Intent.Ref != ref || !hasLane(serve.Lanes, "cancellation") || serve.Instructions == "" {
+	if serve.Cancellation == nil || !serve.Cancellation.Closed || serve.Cancellation.Intent.Ref != ref || !hasCancellationLane(serve.Lanes) || serve.Instructions == "" {
 		t.Fatalf("the closing serve must carry the cancellation and its notice: %+v", serve)
 	}
 }
