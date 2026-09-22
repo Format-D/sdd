@@ -154,8 +154,8 @@ func TestReportWhileOperationPendingIsRefusedAndReadsStayOpen(t *testing.T) {
 		t.Fatalf("setup: %s", contentText(res))
 	}
 	res := rawCall(t, f.client, "next", map[string]any{"session": f.session, "instance": f.instance, "report": assembleReport()})
-	if !res.IsError {
-		t.Fatal("a report while an operation is unfinished must be refused")
+	if !res.IsError || !strings.HasPrefix(contentText(res), string(sdd.ErrorOperationPending)+": ") {
+		t.Fatalf("a report while an operation is unfinished must be refused under its code: %s", contentText(res))
 	}
 	snapshotResponse(t, res)
 	var shown map[string]any

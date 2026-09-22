@@ -370,7 +370,7 @@ func (s *Server) registerTools() {
 			"serves several; omitted, a sole accessible project is inferred, and with several the response " +
 			"lists them (status project-required) instead of opening a session. Every call opens a new " +
 			"dialogue under a new handle; to re-serve an existing one, present its handle to resume_session.",
-	}, s.startSession)
+	}, toolBoundary(s.startSession))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "start_procedure",
@@ -378,7 +378,7 @@ func (s *Server) registerTools() {
 			"session (required). Returns the current step's instructions, the report schema to answer " +
 			"with, and the goal that advances it. This is the only path that leads to graph writes — " +
 			"writes happen inside procedure transitions, never through a direct tool.",
-	}, s.startProcedure)
+	}, toolBoundary(s.startProcedure))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "next",
@@ -390,7 +390,7 @@ func (s *Server) registerTools() {
 			"Other transitions remain blocked until the operation is retried or cancelled. " +
 			"When a move ends, the response carries the session shell's serve — where the " +
 			"dialogue lands.",
-	}, s.next)
+	}, toolBoundary(s.next))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "abandon",
@@ -399,7 +399,7 @@ func (s *Server) registerTools() {
 			"framing; the response names the label and discarded threads. Nothing is cleaned up " +
 			"implicitly: held WIP markers are surfaced and left standing for resume or grooming. The " +
 			"session shell concludes through its own junction, never through abandon.",
-	}, s.abandon)
+	}, toolBoundary(s.abandon))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "park",
@@ -407,7 +407,7 @@ func (s *Server) registerTools() {
 			"position keep, the move lists as an open thread (at junctions and on conclude), and next " +
 			"resumes it. Use it when the user shelves work mid-dialogue — a seeded draft parks as a " +
 			"graph-visible thread instead of living in conversation memory as an agent promise.",
-	}, s.park)
+	}, toolBoundary(s.park))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "resume_session",
@@ -418,14 +418,14 @@ func (s *Server) registerTools() {
 			"you need re-serving: the served-once memory resets, so the complete position serves in full. " +
 			"Only recorded session state resumes — step position, collected fields, staged files — never " +
 			"another conversation's context. A lost handle is the user's to recover, not yours to guess.",
-	}, s.resumeSession)
+	}, toolBoundary(s.resumeSession))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "bind_branch",
 		Description: "Declare or clear the attached session's durable branch binding. Pass exactly one of " +
 			"branch or clear:true. Setting validates the live registered checkout before changing the " +
 			"session; clearing needs no branch capability.",
-	}, s.bindBranch)
+	}, toolBoundary(s.bindBranch))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "stage_attachment",
@@ -433,44 +433,44 @@ func (s *Server) registerTools() {
 			"in a report's attachments field, or amend what is already staged: with patches, the file named " +
 			"by name is edited in place through atomic search-replace pairs instead of re-staging it whole. " +
 			"Never a graph write — the write gate materializes staged files with the entry.",
-	}, s.stageAttachment)
+	}, toolBoundary(s.stageAttachment))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "search",
 		Description: "Search graph entries: terms (text/regex), query (semantic phrase), or both (hybrid). " +
 			"A free read within the session named by session (required): no move needed, never blocked " +
 			"by procedure state; it runs in that session's project and branch.",
-	}, s.search)
+	}, toolBoundary(s.search))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "view",
 		Description: "Run an sdd view layout pipeline over the graph — overview sections, topic counts, " +
 			"ranked lists. A free read within the session named by session (required).",
-	}, s.view)
+	}, toolBoundary(s.view))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "show",
 		Description: "Read entries in full with their upstream and downstream reference chains, within the " +
 			"session named by session (required). Use whenever the dialogue touches a specific entry — " +
 			"summaries are pointers, not facts.",
-	}, s.show)
+	}, toolBoundary(s.show))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: "read_attachment",
 		Description: "Read an attachment's content, paged, within the session named by session (required): " +
 			"an entry's by ID and filename, or a file staged in the session (before any entry carries it) " +
 			"by handle. Never derive storage paths.",
-	}, s.readAttachment)
+	}, toolBoundary(s.readAttachment))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "info",
 		Description: "Session framing header for the session named by session (required): project, local participant, configured language, available search modes, and actionable recovery notices.",
-	}, s.info)
+	}, toolBoundary(s.info))
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name:        "registry",
 		Description: "Engine function contracts (predicates, queries, commands) — what procedure spec authors consult. Carries the session handle like every other tool.",
-	}, s.registryDocs)
+	}, toolBoundary(s.registryDocs))
 }
 
 // attachedSession returns the named session locked and replayed from its ledger.
@@ -1181,6 +1181,20 @@ func (s *Server) registryDocs(ctx context.Context, req *mcp.CallToolRequest, arg
 	}
 	return nil, result, nil
 
+}
+
+// toolBoundary is where an error meets the agent: a coded application error
+// is rendered with its code leading the text, so a refusal is identified by
+// its code rather than its prose (d-cpt-s2i). Uncoded errors pass unchanged.
+func toolBoundary[In, Out any](handler func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error)) func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		res, out, err := handler(ctx, req, in)
+		var coded *sdd.ApplicationError
+		if err != nil && errors.As(err, &coded) && coded.Code != "" {
+			err = fmt.Errorf("%s: %w", coded.Code, err)
+		}
+		return res, out, err
+	}
 }
 
 // --- serve conversion --------------------------------------------------------
