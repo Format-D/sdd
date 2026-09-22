@@ -137,7 +137,7 @@ open_instances:
       widenReport: searched terms oscillation and fixture; inspected 20260601-100000-s-tac-aaa — no existing entry covers the integration-test angle.
     goal: retry the unfinished operation, or cancel it to return to the preceding interaction
     instance: i_2
-    instructions: This operation did not finish. Tell the user in a sentence. Retry, saying so, when trying again can help; when it cannot, or has stopped helping, the user decides. It can stay pending. Retry is safe: it reuses the recorded input, and effects already applied are recognized, not repeated. Cancel leaves what exists in place.
+    instructions: This operation did not finish. Tell the user in a sentence. Retry, saying so, when trying again can help. When it cannot, or has stopped helping, put both choices to the user: retry, or cancel. It can stay pending until they choose. Retry is safe: it reuses the recorded input, and effects already applied are recognized, not repeated. Cancel leaves what exists in place.
     pending_operation:
       cancel_ref: 14
       command: newEntry

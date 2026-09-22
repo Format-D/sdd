@@ -65,10 +65,10 @@ func (s *Session) OperationEffects(intent MutationIntent) ([]Effect, error) {
 	return cmd.Effects(&Context{Instance: inst.ID, Intent: &intent, Store: inst.Store, Step: intent.Step, Reads: s.reads})
 }
 
-// The pending-operation serve's goal and its only prose, fixed by d-tac-qws.
+// The pending-operation serve's goal and its only prose, fixed by d-tac-qws and d-tac-ft4.
 const (
 	PendingOperationGoal         = "retry the unfinished operation, or cancel it to return to the preceding interaction"
-	PendingOperationInstructions = "This operation did not finish. Tell the user in a sentence. Retry, saying so, when trying again can help; when it cannot, or has stopped helping, the user decides. It can stay pending. Retry is safe: it reuses the recorded input, and effects already applied are recognized, not repeated. Cancel leaves what exists in place."
+	PendingOperationInstructions = "This operation did not finish. Tell the user in a sentence. Retry, saying so, when trying again can help. When it cannot, or has stopped helping, put both choices to the user: retry, or cancel. It can stay pending until they choose. Retry is safe: it reuses the recorded input, and effects already applied are recognized, not repeated. Cancel leaves what exists in place."
 )
 
 const MutationCancelled = "cancelled"
