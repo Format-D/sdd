@@ -14,6 +14,10 @@ type MutationIntent struct {
 	Step     string
 	Command  string
 	Values   map[string]string
+	// To is the transition the dispatching chooser option owes once the
+	// command finishes; a retry completes it, so the instance never re-serves
+	// the answered chooser (s-tac-do6). Empty for a step op.
+	To string
 }
 
 // OperationError is a recorded invocation that did not finish; the intent stays
@@ -189,10 +193,16 @@ func (s *Session) Retry(instance string, ref uint64) (*Serve, error) {
 		return nil, fmt.Errorf("instance %q not found", instance)
 	}
 	if !s.intentDone {
-		if err := s.runCommand(inst, s.intent.Command); err != nil {
+		to := s.intent.To
+		if err := s.runCommand(inst, s.intent.Command, to); err != nil {
 			return nil, err
 		}
 		inst.opDone = true
+		if to != "" {
+			if err := s.transitionTo(inst, to, false); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err := s.cascade(inst); err != nil {
 		return nil, err
@@ -255,6 +265,7 @@ func (s *Session) restoreIntent(event Event) error {
 		Step    string            `json:"step"`
 		Command string            `json:"fn"`
 		Values  map[string]string `json:"values"`
+		To      string            `json:"to"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return err
@@ -262,7 +273,7 @@ func (s *Session) restoreIntent(event Event) error {
 	if event.Position == 0 || data.Step != inst.Step || data.Command == "" {
 		return fmt.Errorf("mutation intent has an invalid position or invocation")
 	}
-	s.intent = &MutationIntent{Ref: event.Position, Instance: inst.ID, Step: data.Step, Command: data.Command, Values: data.Values}
+	s.intent = &MutationIntent{Ref: event.Position, Instance: inst.ID, Step: data.Step, Command: data.Command, Values: data.Values, To: data.To}
 	s.intentStore = inst.Store.Clone()
 	s.intentDone = false
 	s.cancelled = nil

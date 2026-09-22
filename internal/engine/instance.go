@@ -245,7 +245,7 @@ func (s *Session) cascade(inst *Instance) error {
 		}
 
 		if step.Op != "" && !inst.opDone {
-			if err := s.runCommand(inst, step.Op); err != nil {
+			if err := s.runCommand(inst, step.Op, ""); err != nil {
 				return err
 			}
 			inst.opDone = true
@@ -319,8 +319,10 @@ func (s *Session) reopenStalePlayback(inst *Instance, failing []FailedPredicate)
 }
 
 // runCommand executes a registry command at the instance's current step and
-// logs its engine writes as an op_result event.
-func (s *Session) runCommand(inst *Instance, name string) error {
+// logs its engine writes as an op_result event. A non-empty to names the
+// transition the dispatching option owes after the command, recorded with the
+// intent so a retry completes it.
+func (s *Session) runCommand(inst *Instance, name, to string) error {
 	if err := s.checkSink(); err != nil {
 		return err
 	}
@@ -335,13 +337,15 @@ func (s *Session) runCommand(inst *Instance, name string) error {
 			if err != nil {
 				return fmt.Errorf("preparing command %q: %w", name, err)
 			}
-			position := s.appendEvent(inst.ID, EventMutationIntent, map[string]any{
-				"step": inst.Step, "fn": name, "values": values,
-			})
+			data := map[string]any{"step": inst.Step, "fn": name, "values": values}
+			if to != "" {
+				data["to"] = to
+			}
+			position := s.appendEvent(inst.ID, EventMutationIntent, data)
 			if err := s.checkSink(); err != nil {
 				return err
 			}
-			s.intent = &MutationIntent{Ref: position, Instance: inst.ID, Step: inst.Step, Command: name, Values: values}
+			s.intent = &MutationIntent{Ref: position, Instance: inst.ID, Step: inst.Step, Command: name, Values: values, To: to}
 			s.intentStore = inst.Store.Clone()
 			s.intentDone = false
 			s.cancelled = nil

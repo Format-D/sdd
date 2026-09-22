@@ -627,7 +627,7 @@ func TestRunCommandDiscardsStoreWritesOnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	beforeEvents := len(env.sink.events)
-	if err := env.session.runCommand(inst, "failAfterWrite"); err == nil || !strings.Contains(err.Error(), "injected command failure") {
+	if err := env.session.runCommand(inst, "failAfterWrite", ""); err == nil || !strings.Contains(err.Error(), "injected command failure") {
 		t.Fatalf("runCommand error = %v", err)
 	}
 	if marker, _ := inst.Store.Get("marker"); marker != "original" {
@@ -660,7 +660,7 @@ func TestRunCommandCannotWriteReportState(t *testing.T) {
 	}
 	inst, _ := env.session.Instance(sv.Instance)
 	beforeEvents := len(env.sink.events)
-	if err := env.session.runCommand(inst, "attemptStateWrite"); err != nil {
+	if err := env.session.runCommand(inst, "attemptStateWrite", ""); err != nil {
 		t.Fatal(err)
 	}
 	if writeErr == nil || !strings.Contains(writeErr.Error(), "only through WriteEngine") {

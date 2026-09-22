@@ -689,7 +689,7 @@ func (s *Session) Answer(instanceID, chooser, choice string, fields map[string]a
 	recordDispatchSeed(inst, opt)
 
 	if opt.Call != "" {
-		if err := s.runCommand(inst, opt.Call); err != nil {
+		if err := s.runCommand(inst, opt.Call, opt.To); err != nil {
 			return nil, err
 		}
 	}
