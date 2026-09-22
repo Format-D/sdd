@@ -16,9 +16,9 @@ cancellation:
 goal: put the choice to the user and relay their answer verbatim
 instance: i_2
 instructions: |
-  (step playback instructions were served earlier this session — follow them; goal: put the choice to the user and relay their answer verbatim. Lost them to a context compaction? resume_session with this session's handle re-serves this position in full.)
-
   Cancelled operation "newEntry". Returned to the "playback" interaction without advancing it. It left: entry 20260921-120000-s-tac-op1, absent. Nothing is cleaned up. Confirming again starts a new operation with new identifiers.
+
+  (lanes served earlier this session: playback — resume_session with this session's handle re-serves this position in full)
 pending_chooser:
   chooser: playback
   kind: user

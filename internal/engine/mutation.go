@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"strings"
 )
 
 // MutationIntent identifies one invocation without duplicating its recorded input.
@@ -86,6 +87,56 @@ func (s *Session) CancelledMutation() *MutationCancellation {
 	result := *s.cancelled
 	result.Intent.Values = maps.Clone(result.Intent.Values)
 	return &result
+}
+
+// clearCancellation ends a cancellation's currency: the next interaction on
+// its instance, a report or an answer, moves the dialogue on (d-tac-t6u).
+func (s *Session) clearCancellation(instanceID string) {
+	if s.cancelled != nil && s.cancelled.Intent.Instance == instanceID {
+		s.cancelled = nil
+	}
+}
+
+// CancellationServe is a current cancellation as a serve carries it: the
+// intent it ended, where the instance returned to, and the effects the
+// operation reports it left (d-tac-7mh).
+type CancellationServe struct {
+	Intent     MutationIntent
+	ReturnStep string
+	Closed     bool
+	Effects    []Effect
+}
+
+// Cancellation returns the current cancellation with its operation's live
+// effects report, or nil when none is current.
+func (s *Session) Cancellation() (*CancellationServe, error) {
+	cancelled := s.CancelledMutation()
+	if cancelled == nil {
+		return nil, nil
+	}
+	effects, err := s.OperationEffects(cancelled.Intent)
+	if err != nil {
+		return nil, fmt.Errorf("reporting effects of cancelled operation %q: %w", cancelled.Intent.Command, err)
+	}
+	return &CancellationServe{Intent: cancelled.Intent, ReturnStep: cancelled.ReturnStep, Closed: cancelled.ReturnStep == "", Effects: effects}, nil
+}
+
+// CancellationNotice is the cancellation serve's prose: where the instance
+// returned to and what the operation reports it left.
+func CancellationNotice(c *CancellationServe) string {
+	position := fmt.Sprintf("Returned to the %q interaction without advancing it.", c.ReturnStep)
+	if c.Closed {
+		position = "Closed the instance, because no interaction preceded the operation."
+	}
+	left := "What it already applied stays in place."
+	if len(c.Effects) > 0 {
+		items := make([]string, 0, len(c.Effects))
+		for _, effect := range c.Effects {
+			items = append(items, fmt.Sprintf("%s %s, %s", effect.Kind, effect.ID, effect.State))
+		}
+		left = "It left: " + strings.Join(items, "; ") + "."
+	}
+	return fmt.Sprintf("Cancelled operation %q. %s %s Nothing is cleaned up. Confirming again starts a new operation with new identifiers.", c.Intent.Command, position, left)
 }
 
 // PendingMutation returns the unresolved invocation, without executing it.

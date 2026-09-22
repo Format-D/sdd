@@ -590,6 +590,7 @@ func (s *Session) Report(instanceID string, fields map[string]any) (*Serve, erro
 	if err := s.checkSink(); err != nil {
 		return nil, err
 	}
+	s.clearCancellation(inst.ID)
 	if inst.currentStep().Op == "" {
 		inst.interactionStep = inst.Step
 	}
@@ -680,6 +681,7 @@ func (s *Session) Answer(instanceID, chooser, choice string, fields map[string]a
 	if err := s.checkSink(); err != nil {
 		return nil, err
 	}
+	s.clearCancellation(inst.ID)
 	inst.interactionStep = inst.Step
 
 	// A dispatching junction's declared handoff rides the answered option:
@@ -860,6 +862,7 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		if _, err := inst.Store.WriteState(fields); err != nil {
 			return err
 		}
+		s.clearCancellation(inst.ID)
 		if inst.currentStep().Op == "" {
 			inst.interactionStep = inst.Step
 		}
@@ -869,6 +872,7 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		if err != nil {
 			return err
 		}
+		s.clearCancellation(inst.ID)
 		inst.interactionStep = inst.Step
 		// The answer's own effects were logged separately (op_result,
 		// transition); collected fields ride the answer event.

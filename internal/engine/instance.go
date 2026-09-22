@@ -136,6 +136,9 @@ type Serve struct {
 	// Cuts records every bound that fired on this serve; the engine-owned
 	// cuts lane renders them and the measurement harness reads them.
 	Cuts []truncate.Cut
+	// Cancellation is the current cancellation this serve lands, rendered as
+	// its own lane; nil on every other serve.
+	Cancellation *CancellationServe
 }
 
 // ServeLane is defined in pkg/application/types — the exported surface names
@@ -524,6 +527,14 @@ func (s *Session) serveWith(inst *Instance, fullDraft bool) (*Serve, error) {
 	if len(cuts) > 0 {
 		lanes = append(lanes, ServeLane{Name: "cuts", Text: renderCuts(cuts)})
 		sv.Cuts = cuts
+	}
+	if cancelled := s.cancelled; cancelled != nil && cancelled.Intent.Instance == inst.ID {
+		cancellation, err := s.Cancellation()
+		if err != nil {
+			return nil, err
+		}
+		sv.Cancellation = cancellation
+		lanes = append(lanes, ServeLane{Name: "cancellation", Text: CancellationNotice(cancellation)})
 	}
 	sv.Lanes = lanes
 	for _, lane := range lanes {
