@@ -518,8 +518,6 @@ sdd show d-cpt-vr4              # the entry plus its grounding and consumers
 sdd show d-cpt-vr4 --up 4 --down 3   # widen the neighborhood
 ```
 
-**`sdd recover`** — inspect a durable write whose outcome needs an explicit decision. The interactive command reconciles the concrete branch target before offering a valid action; it never replays pending work automatically. `sdd recover --history` shows terminal audit history. See [local mutation targets and recovery](docs/local-mutation-recovery.md).
-
 For the full CLI surface, run `sdd --help`.
 
 ## Directory layout
@@ -549,7 +547,6 @@ Registering the MCP server does land in your project tree, so engine mode works 
 - [docs/signal-dialogue-decision.md](docs/signal-dialogue-decision.md) — framework model
 - [docs/story.md](docs/story.md) — a fictional story (Kōgen Coffee) of what SDD could become; the vision that sparked the design
 - [docs/signals.md](docs/signals.md) — open design signals for the framework itself
-- [docs/local-mutation-recovery.md](docs/local-mutation-recovery.md) — explicit branch authority, durable apply, and recovery states
 - [CLAUDE.md](CLAUDE.md) — guidance for Claude Code working on SDD itself
 
 ## Star the repo

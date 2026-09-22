@@ -235,10 +235,6 @@
           "description": "the session's project ID",
           "type": "string"
         },
-        "recovery": {
-          "description": "host-neutral actionable recovery notices; empty when no write awaits explicit recovery",
-          "type": "string"
-        },
         "search": {
           "description": "available retrieval modes: text or vector,text",
           "type": "string"

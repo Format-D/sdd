@@ -80,7 +80,7 @@ func TestAcquiredReadsUseReadAuthorityAndRelease(t *testing.T) {
 			return e
 		},
 		"view": func() error {
-			_, e := app.View(t.Context(), identity, "base", sdd.ViewRequest{Branch: "work", Layout: "as-list", OmitRecovery: true})
+			_, e := app.View(t.Context(), identity, "base", sdd.ViewRequest{Branch: "work", Layout: "as-list"})
 			return e
 		},
 		"text search": func() error {

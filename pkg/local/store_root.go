@@ -1,7 +1,6 @@
 package local
 
 import (
-	"errors"
 	"fmt"
 	"os"
 )
@@ -26,16 +25,4 @@ func openStoreRoot(dir string, create bool) (*os.Root, error) {
 		return nil, err
 	}
 	return root, nil
-}
-
-// syncDir flushes a directory entry so a rename is durable.
-func syncDir(dir string) error {
-	handle, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	if err := handle.Sync(); err != nil {
-		return errors.Join(err, handle.Close())
-	}
-	return handle.Close()
 }

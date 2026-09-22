@@ -60,9 +60,6 @@ func (s *FilesystemGraphStore) AcquireSnapshot(ctx context.Context, q app.Snapsh
 		return nil, err
 	}
 	defer unlock(lock)
-	if err := s.recoverPendingTransactionsLocked(); err != nil {
-		return nil, err
-	}
 	revision, err := graphDirectoryRevision(s.dir)
 	if err != nil {
 		return nil, err
@@ -71,7 +68,7 @@ func (s *FilesystemGraphStore) AcquireSnapshot(ctx context.Context, q app.Snapsh
 		return nil, fmt.Errorf("sdd: exact source revision is no longer retained")
 	}
 	if q.IncludesRevision != "" {
-		ok, err := s.includesRevision(revision, q.IncludesRevision)
+		ok, err := s.includesRevision(ctx, revision, q.IncludesRevision)
 		if err != nil {
 			return nil, err
 		}
@@ -121,43 +118,32 @@ func (s *FilesystemGraphStore) leaseSnapshot(retained *retainedSnapshot) *app.Ac
 	}}
 }
 
-func (s *FilesystemGraphStore) includesRevision(current, required string) (bool, error) {
-	if current == required {
-		return true, nil
-	}
-	names, err := os.ReadDir(filepath.Join(s.dir, ".sdd-runtime", "applied"))
-	if err != nil {
-		return false, err
-	}
-	parents := map[string][]string{}
-	for _, name := range names {
-		if name.IsDir() || filepath.Ext(name.Name()) != ".json" {
-			continue
-		}
-		id := name.Name()[:len(name.Name())-5]
-		record, found, err := s.loadApplyRecord(id)
-		if err != nil {
-			return false, err
-		}
-		if found && record.Result.State == app.MutationApplied {
-			parents[record.Result.Revision] = append(parents[record.Result.Revision], record.ExpectedRevision)
-		}
-	}
-	todo := []string{current}
-	seen := map[string]bool{}
-	for len(todo) > 0 {
-		node := todo[len(todo)-1]
-		todo = todo[:len(todo)-1]
+// includesRevision reports whether the current revision carries the required
+// one: equal revisions, or on a Git-backed target a commit that is an ancestor
+// of the branch head.
+func (s *FilesystemGraphStore) includesRevision(ctx context.Context, current, required string) (bool, error) {
+	for node, seen := current, map[string]bool{}; node != "" && !seen[node]; node = s.lineage[node] {
 		if node == required {
 			return true, nil
 		}
-		if seen[node] {
-			continue
-		}
 		seen[node] = true
-		todo = append(todo, parents[node]...)
 	}
-	return false, nil
+	if s.publicationGit == nil || !isGitRevision(required) {
+		return false, nil
+	}
+	return s.publicationGit.isAncestor(ctx, required)
+}
+
+func isGitRevision(revision string) bool {
+	if len(revision) < 7 || len(revision) > 64 {
+		return false
+	}
+	for _, r := range revision {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func freezeGraphFS(ctx context.Context, dir string) (*zip.Reader, error) {

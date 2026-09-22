@@ -42,29 +42,26 @@ func TestFilesystemGraphStoreConformance(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		const entryPath = "2026/07/13-020000-s-tac-api.md"
+		document, err := sdd.ParseEntryDocument(entryPath, []byte(localEntry))
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := sdd.PublicationKey{Session: "s_conformance", Sequence: 3, Discriminator: "newEntry"}
 		batch := sdd.MutationBatch{
-			ID: "mutation-1",
-			Changes: []sdd.DocumentChange{{
-				LogicalPath:    "2026/07/13-020000-s-tac-api.md",
-				CanonicalBytes: []byte(localEntry),
-			}},
+			ID:      key.String(),
+			Changes: []sdd.DocumentChange{{LogicalPath: entryPath, Document: &document, CanonicalBytes: []byte(localEntry)}},
 		}
-		batch.Digest, err = sdd.MutationBatchDigest(batch)
-		if err != nil {
-			t.Fatal(err)
+		return sddtest.GraphStoreFixture{
+			Store: store, InitialRevision: initial.Revision(), Entry: batch, EntryID: "20260713-020000-s-tac-api", EntryKey: key,
+			DocumentPath: "wip/20260713-030000-christopher.md", DocumentContent: []byte("---\nentry: 20260713-020000-s-tac-api\nparticipant: Christopher\n---\n\nfirst\n"),
+			DocumentReplacement: []byte("---\nentry: 20260713-020000-s-tac-api\nparticipant: Christopher\n---\n\nsecond\n"),
+			DocumentKeys: [3]sdd.PublicationKey{
+				{Session: "s_conformance", Sequence: 5, Discriminator: "wipStart:m"},
+				{Session: "s_conformance", Sequence: 7, Discriminator: "replace:m"},
+				{Session: "s_conformance", Sequence: 9, Discriminator: "wipDone:m"},
+			},
 		}
-		secondBatch := sdd.MutationBatch{
-			ID: "mutation-2",
-			Changes: []sdd.DocumentChange{{
-				LogicalPath:    "2026/07/13-030000-s-tac-two.md",
-				CanonicalBytes: []byte(localEntry),
-			}},
-		}
-		secondBatch.Digest, err = sdd.MutationBatchDigest(secondBatch)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sddtest.GraphStoreFixture{Store: store, InitialRevision: initial.Revision(), Batch: batch, SecondBatch: secondBatch}
 	})
 }
 

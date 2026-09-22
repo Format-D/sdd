@@ -3,12 +3,8 @@ package application
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -112,11 +108,6 @@ type CreateEntryResult struct {
 	Findings []Finding
 }
 
-type MutationResult struct {
-	Project ProjectRef
-	Binding SessionBinding
-}
-
 // CurrentSnapshot resolves current read access and returns the opaque
 // canonical snapshot for protocol adapters that host SDD's engine.
 func (a *Application) CurrentSnapshot(ctx context.Context, identity RequestIdentity, project ProjectID) (*Snapshot, error) {
@@ -155,96 +146,6 @@ func (a *Application) OpenStagedBlob(ctx context.Context, identity RequestIdenti
 	return a.blobs.Open(ctx, ref, blobID)
 }
 
-func (a *Application) ReplaceSummary(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, target MutationTarget, entryID, summary string) (MutationResult, error) {
-	_, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	target, err = resolveMutationTarget(runtime, target)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	snapshot, err := snapshotMutationTarget(ctx, runtime, target)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	current, ok := snapshot.graph.ByID[entryID]
-	if !ok {
-		return MutationResult{}, fmt.Errorf("entry not found: %s", entryID)
-	}
-	entry := *current
-	entry.Summary = summary
-	path, err := model.IDToRelPath(entryID)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	canonical := []byte(model.FormatFrontmatter(&entry) + "\n" + entry.Content + "\n")
-	mutationID, err := newMutationID("summary-" + entryID)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	document, err := ParseEntryDocument(filepath.ToSlash(path), canonical)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	return a.applyDocumentMutation(ctx, identity, runtime, binding, target, mutationID, "sdd: summarize "+entryID+" (manual)", DocumentChange{LogicalPath: filepath.ToSlash(path), Document: &document, CanonicalBytes: canonical})
-}
-
-func (a *Application) StartWIP(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, target MutationTarget, entryID, description string) (string, MutationResult, error) {
-	principal, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
-	if err != nil {
-		return "", MutationResult{}, err
-	}
-	participant, err := a.participantFor(ctx, principal, runtime)
-	if err != nil {
-		return "", MutationResult{}, err
-	}
-	if participant == "" {
-		return "", MutationResult{}, fmt.Errorf("sdd: resolved participant is required to start WIP")
-	}
-	marker := &model.WIPMarker{
-		ID: model.GenerateWIPMarkerID(participant), Entry: entryID, Participant: participant,
-		Exclusive: true, Content: description, Time: a.now(),
-	}
-	target, err = resolveMutationTarget(runtime, target)
-	if err != nil {
-		return "", MutationResult{}, err
-	}
-	result, err := a.applyDocumentMutation(ctx, identity, runtime, binding, target, "wip-start-"+marker.ID, fmt.Sprintf("sdd: wip start %s (%s)", entryID, participant), DocumentChange{
-		LogicalPath: filepath.ToSlash(model.WIPMarkerPath(marker.ID)), CanonicalBytes: []byte(model.FormatWIPMarker(marker)),
-	})
-	return marker.ID, result, err
-}
-
-func (a *Application) FinishWIP(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, target MutationTarget, markerID string) (MutationResult, error) {
-	_, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	target, err = resolveMutationTarget(runtime, target)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	return a.applyDocumentMutation(ctx, identity, runtime, binding, target, "wip-done-"+markerID, "sdd: wip done "+markerID, DocumentChange{LogicalPath: filepath.ToSlash(model.WIPMarkerPath(markerID)), Delete: true})
-}
-
-func (a *Application) applyDocumentMutation(ctx context.Context, identity RequestIdentity, runtime *ProjectRuntime, binding SessionBinding, target MutationTarget, id, message string, change DocumentChange) (MutationResult, error) {
-	snapshot, err := snapshotMutationTarget(ctx, runtime, target)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	batch := MutationBatch{ID: id, Message: message, Changes: []DocumentChange{change}}
-	batch.Digest, err = MutationBatchDigest(batch)
-	if err != nil {
-		return MutationResult{}, err
-	}
-	transition, err := a.ApplyPrepared(ctx, identity, runtime.options.Project.ID, binding, PreparedTransition{
-		Version: PreparedTransitionVersion, Target: target, ExpectedGraphRevision: snapshot.Revision(), Batch: batch,
-		Staged: SessionRef{Subject: binding.Subject, Session: binding.SessionID},
-	})
-	return MutationResult{Project: runtime.options.Project, Binding: transition.Binding}, err
-}
-
 // resolveMutationTarget completes a target against the runtime it is written
 // through: an empty branch means the runtime's configured default, and a named
 // project must be the runtime's own.
@@ -262,30 +163,6 @@ func resolveMutationTarget(runtime *ProjectRuntime, requested MutationTarget) (M
 		return MutationTarget{}, err
 	}
 	return requested, nil
-}
-
-func snapshotMutationTarget(ctx context.Context, runtime *ProjectRuntime, target MutationTarget) (snapshot *Snapshot, err error) {
-	acquired, err := runtime.acquire(ctx, target)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if releaseErr := acquired.Release(); releaseErr != nil {
-			err = errors.Join(err, fmt.Errorf("releasing mutation target %s after snapshot: %w", target.Branch, releaseErr))
-		}
-	}()
-	selectedRuntime := *runtime
-	selectedRuntime.options.Graph = acquired.Graph
-	snapshot, _, err = readMaterializedSnapshot(ctx, &selectedRuntime, "")
-	return snapshot, err
-}
-
-func newMutationID(prefix string) (string, error) {
-	var random [8]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", fmt.Errorf("sdd: generating mutation ID: %w", err)
-	}
-	return prefix + "-" + hex.EncodeToString(random[:]), nil
 }
 
 // draftLayer expands an abbreviated layer to its canonical form.

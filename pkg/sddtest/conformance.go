@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"slices"
@@ -60,49 +61,70 @@ func RunAccessResolverTests(t *testing.T, factory func(*testing.T) AccessResolve
 	}
 }
 
+// GraphStoreFixture drives the publication conformance of a graph store: the
+// store must implement sdd.PublicationStore. Entry is one complete entry
+// publication under EntryKey; Document is an entry-less document the suite
+// creates, replaces and removes under the three DocumentKeys.
 type GraphStoreFixture struct {
 	Store           sdd.GraphStore
 	InitialRevision string
-	Batch           sdd.MutationBatch
+	Entry           sdd.MutationBatch
+	EntryID         string
+	EntryKey        sdd.PublicationKey
 	Blobs           sdd.StagedBlobReader
 	AttachmentEntry string
 	AttachmentName  string
-	// SecondBatch, when set, exercises the merge-under-append guarantee: it
-	// must target paths unrelated to Batch so it can apply cleanly against the
-	// revision Batch advanced the store to.
-	SecondBatch sdd.MutationBatch
+
+	DocumentPath        string
+	DocumentContent     []byte
+	DocumentReplacement []byte
+	DocumentKeys        [3]sdd.PublicationKey
 }
 
+// RunGraphStoreTests checks the guarantees every composition's store owes the
+// engine's recorded-intent publication (d-tac-n47, d-tac-wgw): a key publishes
+// once and repeats return the original, a replacement conditions on the
+// document it replaces, and removing an absent document succeeds.
 func RunGraphStoreTests(t *testing.T, factory func(*testing.T) GraphStoreFixture) {
 	t.Helper()
 	fixture := factory(t)
-	snapshot, err := fixture.Store.Current(t.Context())
+	ctx := t.Context()
+	snapshot, err := fixture.Store.Current(ctx)
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
 	if snapshot == nil || snapshot.Revision() != fixture.InitialRevision {
 		t.Fatalf("Current revision = %q, want %q", snapshot.Revision(), fixture.InitialRevision)
 	}
-	stale, staleErr := fixture.Store.Apply(t.Context(), fixture.InitialRevision+"-stale", fixture.Batch, fixture.Blobs)
-	if stale.State != sdd.MutationNotApplied {
-		t.Fatalf("stale Apply = %+v (error %v), want not_applied", stale, staleErr)
+	publisher, ok := fixture.Store.(sdd.PublicationStore)
+	if !ok {
+		t.Fatalf("store %T does not implement sdd.PublicationStore", fixture.Store)
 	}
-	applied, err := fixture.Store.Apply(t.Context(), fixture.InitialRevision, fixture.Batch, fixture.Blobs)
+
+	entryPath := fixture.Entry.Changes[0].LogicalPath
+	entryID := fixture.EntryID
+	if _, found, err := publisher.LookupEntryPublication(ctx, fixture.EntryKey, entryID); err != nil || found {
+		t.Fatalf("LookupEntryPublication before publish = found %v, %v; want absent", found, err)
+	}
+	published, err := publisher.PublishEntry(ctx, fixture.EntryKey, fixture.Entry, fixture.Blobs)
 	if err != nil {
-		t.Fatalf("Apply: %v", err)
+		t.Fatalf("PublishEntry: %v", err)
 	}
-	if applied.State != sdd.MutationApplied || applied.Revision == "" {
-		t.Fatalf("Apply = %+v, want applied with revision", applied)
+	if published.Document.LogicalPath != entryPath || published.Revision == "" {
+		t.Fatalf("PublishEntry = %+v, want document at %s with a revision", published, entryPath)
 	}
-	reconciled, err := fixture.Store.Reconcile(t.Context(), fixture.Batch.ID, fixture.Batch.Digest)
+	repeated, err := publisher.PublishEntry(ctx, fixture.EntryKey, fixture.Entry, fixture.Blobs)
 	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
+		t.Fatalf("repeated PublishEntry: %v", err)
 	}
-	if reconciled != applied {
-		t.Fatalf("Reconcile = %+v, want %+v", reconciled, applied)
+	if repeated.Document.LogicalPath != published.Document.LogicalPath || repeated.Document.Body != published.Document.Body {
+		t.Fatalf("repeated PublishEntry = %+v, want the original %+v", repeated.Document, published.Document)
+	}
+	if _, found, err := publisher.LookupEntryPublication(ctx, fixture.EntryKey, entryID); err != nil || !found {
+		t.Fatalf("LookupEntryPublication after publish = found %v, %v; want found", found, err)
 	}
 	if fixture.AttachmentEntry != "" {
-		page, err := fixture.Store.ReadAttachmentPage(t.Context(), fixture.AttachmentEntry, fixture.AttachmentName, 0, 1)
+		page, err := fixture.Store.ReadAttachmentPage(ctx, fixture.AttachmentEntry, fixture.AttachmentName, 0, 1)
 		if err != nil {
 			t.Fatalf("ReadAttachmentPage: %v", err)
 		}
@@ -110,24 +132,59 @@ func RunGraphStoreTests(t *testing.T, factory func(*testing.T) GraphStoreFixture
 			t.Fatalf("ReadAttachmentPage = %+v", page)
 		}
 	}
-	if fixture.SecondBatch.ID != "" {
-		// Merge under append: SecondBatch was prepared against InitialRevision,
-		// but the first Apply advanced the store, so that pin is now stale and
-		// conflicts. Re-reading the fresh revision and applying there succeeds
-		// cleanly — the adapter guarantee the engine's bounded-retry merge
-		// depends on. A conflict must leave no ledger record blocking the retry.
-		stale, staleErr := fixture.Store.Apply(t.Context(), fixture.InitialRevision, fixture.SecondBatch, fixture.Blobs)
-		if stale.State != sdd.MutationNotApplied {
-			t.Fatalf("stale merge Apply = %+v (error %v), want not_applied conflict", stale, staleErr)
-		}
-		fresh, err := fixture.Store.Current(t.Context())
-		if err != nil {
-			t.Fatalf("Current before merge apply: %v", err)
-		}
-		merged, err := fixture.Store.Apply(t.Context(), fresh.Revision(), fixture.SecondBatch, fixture.Blobs)
-		if err != nil || merged.State != sdd.MutationApplied || merged.Revision == "" {
-			t.Fatalf("merge-under-append Apply = %+v, %v", merged, err)
-		}
+
+	if fixture.DocumentPath == "" {
+		return
+	}
+	create, replace, remove := fixture.DocumentKeys[0], fixture.DocumentKeys[1], fixture.DocumentKeys[2]
+	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !current.Absent {
+		t.Fatalf("ReadDocument before create = %+v, %v; want absent", current, err)
+	}
+	created, err := publisher.PublishDocument(ctx, create, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Content: fixture.DocumentContent, Message: "create"})
+	if err != nil {
+		t.Fatalf("PublishDocument create: %v", err)
+	}
+	if created.Absent || !bytes.Equal(created.Content, fixture.DocumentContent) || created.Revision == "" {
+		t.Fatalf("PublishDocument create = %+v", created)
+	}
+	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentContent) {
+		t.Fatalf("ReadDocument after create = %+v, %v", current, err)
+	}
+	again, err := publisher.PublishDocument(ctx, create, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Content: fixture.DocumentContent, Message: "create"})
+	if err != nil || !bytes.Equal(again.Content, fixture.DocumentContent) {
+		t.Fatalf("repeated PublishDocument create = %+v, %v; want the original", again, err)
+	}
+	if looked, found, err := publisher.LookupDocumentPublication(ctx, create, fixture.DocumentPath); err != nil {
+		t.Fatalf("LookupDocumentPublication: %v", err)
+	} else if found && !bytes.Equal(looked.Content, fixture.DocumentContent) {
+		t.Fatalf("LookupDocumentPublication = %+v, want the created content", looked)
+	}
+	_, err = publisher.PublishDocument(ctx, replace, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Content: fixture.DocumentReplacement, ExpectedBlob: sdd.GitBlobID([]byte("something else")), Message: "replace"})
+	var appErr *sdd.ApplicationError
+	if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorGraphConflict {
+		t.Fatalf("PublishDocument replace with a stale precondition = %v, want %s", err, sdd.ErrorGraphConflict)
+	}
+	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentContent) {
+		t.Fatalf("a refused replacement must leave the document unchanged: %+v, %v", current, err)
+	}
+	replaced, err := publisher.PublishDocument(ctx, replace, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Content: fixture.DocumentReplacement, ExpectedBlob: sdd.GitBlobID(fixture.DocumentContent), Message: "replace"})
+	if err != nil || !bytes.Equal(replaced.Content, fixture.DocumentReplacement) {
+		t.Fatalf("PublishDocument replace = %+v, %v", replaced, err)
+	}
+	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentReplacement) {
+		t.Fatalf("ReadDocument after replace = %+v, %v", current, err)
+	}
+	removed, err := publisher.PublishDocument(ctx, remove, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Message: "remove"})
+	if err != nil || !removed.Absent {
+		t.Fatalf("PublishDocument remove = %+v, %v; want absent", removed, err)
+	}
+	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !current.Absent {
+		t.Fatalf("ReadDocument after remove = %+v, %v; want absent", current, err)
+	}
+	absentKey := remove
+	absentKey.Sequence++
+	if again, err := publisher.PublishDocument(ctx, absentKey, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Message: "remove again"}); err != nil || !again.Absent {
+		t.Fatalf("removing an absent document = %+v, %v; want absent without error", again, err)
 	}
 }
 

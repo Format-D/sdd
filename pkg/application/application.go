@@ -111,17 +111,13 @@ func (a *Application) infoFromRuntime(ctx context.Context, principal Principal, 
 	if runtime.options.Embedder != nil && runtime.options.SearchIndex != nil {
 		search = "vector,text"
 	}
-	recoveries, err := a.listRecoveries(ctx, runtime, false)
-	if err != nil {
-		return InfoResult{}, err
-	}
 	participant, err := a.participantFor(ctx, principal, runtime)
 	if err != nil {
 		return InfoResult{}, err
 	}
 	return InfoResult{
 		Project: runtime.options.Project, Participant: participant, Language: runtime.options.Language,
-		Search: search, Recovery: renderRecoveryNotices(recoveries.Items),
+		Search: search,
 	}, nil
 }
 
@@ -255,15 +251,6 @@ func (a *Application) viewFromSnapshot(ctx context.Context, identity RequestIden
 		matched += memberResult.MatchedCount()
 		fmt.Fprintf(&rendered, "\n── repo: %s ──\n", repoID)
 		presenters.RenderView(&rendered, memberResult)
-	}
-	if !request.OmitRecovery {
-		recoveries, err := a.listRecoveries(ctx, runtime, false)
-		if err != nil {
-			return ViewResult{}, err
-		}
-		if notices := renderRecoveryNotices(recoveries.Items); notices != "" {
-			fmt.Fprintf(&rendered, "\n%s\n", notices)
-		}
 	}
 	// When a participant filter matched nothing, name the participants the
 	// local graph knows: participant() is an exact canonical match, so an
@@ -566,7 +553,7 @@ func (a *Application) resolveProject(ctx context.Context, principal Principal, p
 // the ID carries 128 random bits and the caller learns nothing until both
 // checks pass. Whether an ended session may still be acted on is the
 // caller's question — recovery reads a concluded log, a move never does.
-func (a *Application) resolveSession(ctx context.Context, identity RequestIdentity, id SessionID, required Access) (Principal, *ProjectRuntime, StoredSession, error) {
+func (a *Application) resolveSession(ctx context.Context, identity RequestIdentity, id SessionID) (Principal, *ProjectRuntime, StoredSession, error) {
 	if id == "" {
 		return Principal{}, nil, StoredSession{}, &ApplicationError{Code: ErrorInvalidArgument, Message: "session ID is required"}
 	}
@@ -587,7 +574,7 @@ func (a *Application) resolveSession(ctx context.Context, identity RequestIdenti
 	}); err != nil {
 		return Principal{}, nil, StoredSession{}, err
 	}
-	runtime, err := a.resolveProject(ctx, principal, stored.Metadata.Project, required)
+	runtime, err := a.resolveProject(ctx, principal, stored.Metadata.Project, AccessRead)
 	if err != nil {
 		return Principal{}, nil, StoredSession{}, err
 	}

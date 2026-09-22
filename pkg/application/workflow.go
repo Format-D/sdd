@@ -307,7 +307,7 @@ func (a *Application) LoadWorkflow(ctx context.Context, identity RequestIdentity
 	if request.SessionID == "" {
 		return nil, fmt.Errorf("sdd: session ID is required")
 	}
-	principal, runtime, stored, err := a.resolveSession(ctx, identity, request.SessionID, AccessRead)
+	principal, runtime, stored, err := a.resolveSession(ctx, identity, request.SessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +325,7 @@ func (a *Application) LoadWorkflow(ctx context.Context, identity RequestIdentity
 
 // RefreshWorkflow replays an authorized session without changing its attachment stamp.
 func (a *Application) RefreshWorkflow(ctx context.Context, identity RequestIdentity, id SessionID) (*WorkflowSession, error) {
-	_, runtime, stored, err := a.resolveSession(ctx, identity, id, AccessRead)
+	_, runtime, stored, err := a.resolveSession(ctx, identity, id)
 	if err != nil {
 		return nil, err
 	}
@@ -831,7 +831,7 @@ func (w *WorkflowSession) BindBranch(ctx context.Context, identity RequestIdenti
 }
 
 func (w *WorkflowSession) bindBranchOnce(branch string, clear bool) error {
-	principal, runtime, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID(), AccessRead)
+	principal, runtime, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID())
 	if err != nil {
 		return err
 	}
@@ -1086,7 +1086,7 @@ func (a *Application) AbandonWorkflowSession(ctx context.Context, identity Reque
 	if request.SessionID == "" {
 		return WorkflowAbandonResult{}, fmt.Errorf("sdd: session ID is required")
 	}
-	_, runtime, stored, err := a.resolveSession(ctx, identity, request.SessionID, AccessRead)
+	_, runtime, stored, err := a.resolveSession(ctx, identity, request.SessionID)
 	if err != nil {
 		return WorkflowAbandonResult{}, err
 	}
@@ -1454,7 +1454,7 @@ func (w *WorkflowSession) appendStoredEvents(events []StoredEvent) error {
 // the store's so a retried append passes the version CAS; an ended session
 // surfaces typed instead of being written on.
 func (w *WorkflowSession) resyncBindingVersion() error {
-	_, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID(), AccessRead)
+	_, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID())
 	if err != nil {
 		return err
 	}
@@ -1467,7 +1467,7 @@ func (w *WorkflowSession) resyncBindingVersion() error {
 }
 
 func (w *WorkflowSession) appendStoredEventsOnce(events []StoredEvent) error {
-	principal, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID(), AccessRead)
+	principal, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID())
 	if err != nil {
 		return err
 	}

@@ -338,7 +338,6 @@ type InfoResult struct {
 	Participant string `json:"participant,omitempty" jsonschema:"configured local participant (canonical name)"`
 	Language    string `json:"language,omitempty" jsonschema:"configured graph language; empty = English"`
 	Search      string `json:"search" jsonschema:"available retrieval modes: text or vector,text"`
-	Recovery    string `json:"recovery,omitempty" jsonschema:"host-neutral actionable recovery notices; empty when no write awaits explicit recovery"`
 	Version     string `json:"version,omitempty"`
 }
 
@@ -1160,7 +1159,7 @@ func (s *Server) info(ctx context.Context, req *mcp.CallToolRequest, args InfoAr
 	}
 	return nil, InfoResult{
 		Project: string(info.Project.ID), Participant: info.Participant, Language: info.Language, Search: info.Search,
-		Recovery: info.Recovery, Version: s.version,
+		Version: s.version,
 	}, nil
 
 }

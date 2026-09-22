@@ -24,7 +24,6 @@ type ProjectRuntimeOptions struct {
 	Graph         GraphStore
 	Targets       TargetAcquirer
 	Branches      BranchValidator
-	Recovery      RecoveryAuthorizer
 	// Embedder and LLM are the two model dependencies, each a pkg/llm port
 	// injected as an instance that arrives already composed — observed,
 	// bounded, and rate-limited by the host's decorators. Routing, deadlines,

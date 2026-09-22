@@ -2,21 +2,20 @@ package application
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // Git blob IDs are SHA-1 by definition; this is an identity, not a security digest.
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 )
 
-// GraphStore is the canonical graph authority: snapshot reads, atomic
-// mutation, reconciliation, and canonical attachment bytes.
+// GraphStore is the canonical graph authority: snapshot reads and canonical
+// attachment bytes. Writes go through PublicationStore, keyed by the session's
+// recorded mutation intent (d-tac-n47).
 type GraphStore interface {
 	Current(context.Context) (*Snapshot, error)
-	Apply(context.Context, string, MutationBatch, StagedBlobReader) (ApplyResult, error)
-	Reconcile(context.Context, string, string) (ApplyResult, error)
 	ReadAttachmentPage(context.Context, string, string, int64, int) (AttachmentPage, error)
 }
 
@@ -48,18 +47,57 @@ type EntryPublication struct {
 	Document EntryDocument
 }
 
-// EntryPublicationStore serializes publication lookup and creation without a
-// graph-wide revision comparison. PublishEntry accepts one entry and its staged
-// attachments. Repeated keys return the original document and revision; a lookup
-// failure is never treated as absence. Required storage commits precede success.
-type EntryPublicationStore interface {
+// DocumentPublication is what one keyed write left for a logical path: the
+// revision carrying it and the document's bytes there, or its absence when the
+// write removed the document or found nothing to remove.
+type DocumentPublication struct {
+	Revision string
+	Content  []byte
+	Absent   bool
+}
+
+// DocumentMutation is one keyed write of a single graph document without
+// attachments: a creation, a replacement conditioned on the document it
+// replaces, or a removal. The store publishes it once under its key.
+type DocumentMutation struct {
+	LogicalPath string
+	// Content is the complete document after the write; nil removes it.
+	Content []byte
+	// ExpectedBlob is the Git blob ID of the document a replacement replaces
+	// (GitBlobID); a mismatch is an ErrorGraphConflict, never a retryable
+	// condition (d-tac-wgw). Empty for a creation or a removal.
+	ExpectedBlob string
+	Message      string
+}
+
+// PublicationStore serializes publication lookup and creation without a
+// graph-wide revision comparison (d-tac-n47). Repeated keys return the original
+// publication; a lookup failure is never treated as absence. PublishEntry
+// accepts one entry and its staged attachments; PublishDocument one entry-less
+// document change: a WIP marker created or removed, a summary replaced. A
+// removal of an absent document succeeds without a publication. Required
+// storage commits precede success.
+type PublicationStore interface {
 	LookupEntryPublication(context.Context, PublicationKey, string) (EntryPublication, bool, error)
 	PublishEntry(context.Context, PublicationKey, MutationBatch, StagedBlobReader) (EntryPublication, error)
+	// ReadDocument returns the document's current bytes on the target, or Absent.
+	ReadDocument(context.Context, string) (DocumentPublication, error)
+	LookupDocumentPublication(context.Context, PublicationKey, string) (DocumentPublication, bool, error)
+	PublishDocument(context.Context, PublicationKey, DocumentMutation) (DocumentPublication, error)
+}
+
+// GitBlobID is the Git object ID of content stored as a blob, the precondition
+// currency of DocumentMutation: computable by any store, verifiable by a Git
+// service against its tree without reading the file.
+func GitBlobID(content []byte) string {
+	h := sha1.New()
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 type MutationBatch struct {
 	ID          string
-	Digest      string
 	Changes     []DocumentChange
 	Attachments []AttachmentMaterialization
 	Message     string
@@ -78,19 +116,6 @@ type DocumentChange struct {
 type Author struct {
 	Name  string
 	Email string
-}
-
-type ApplyState string
-
-const (
-	MutationNotApplied ApplyState = "not_applied"
-	MutationApplied    ApplyState = "applied"
-	MutationUnknown    ApplyState = "unknown"
-)
-
-type ApplyResult struct {
-	State    ApplyState
-	Revision string
 }
 
 type AppliedMutation struct {
@@ -133,19 +158,7 @@ type AttachmentPage struct {
 	Digest     BlobDigest
 }
 
-// StagedBlobReader limits Apply to the blobs named by its prepared batch.
+// StagedBlobReader limits a publication to the blobs named by its batch.
 type StagedBlobReader interface {
 	Open(context.Context, string) (io.ReadCloser, error)
-}
-
-// MutationBatchDigest returns the SDD-owned digest over a storage-neutral
-// batch. The Digest field itself is excluded.
-func MutationBatchDigest(batch MutationBatch) (string, error) {
-	batch.Digest = ""
-	encoded, err := json.Marshal(batch)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(encoded)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }

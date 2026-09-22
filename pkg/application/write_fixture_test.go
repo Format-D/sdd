@@ -70,7 +70,7 @@ func newWriteFixture(t *testing.T, options ...writeFixtureOptions) *writeFixture
 			graph = struct {
 				sdd.GraphStore
 				sdd.SnapshotReader
-				sdd.EntryPublicationStore
+				sdd.PublicationStore
 			}{baseGraph, reader, baseGraph}
 		}
 		if option.Dependency != nil {
