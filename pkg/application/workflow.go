@@ -1202,6 +1202,21 @@ func (w *WorkflowSession) ensureShell() error {
 
 func (w *WorkflowSession) loadProcedure(canonical string) (*engine.Spec, error) {
 	graph, err := w.graphs.Current()
+	if err != nil && w.branch != "" {
+		// A stale binding must not lock the session out: replay resolves the
+		// procedures the session ran, and clearing or re-declaring the binding
+		// needs that replay (20260914-180822-d-cpt-9kv). When the bound branch
+		// has no checkout, the specs resolve from the project's default
+		// branch; replay's entry-identity check still refuses a procedure that
+		// changed underneath the session.
+		var acquisition *targetAcquisitionError
+		if errors.As(err, &acquisition) && acquisition.target.Branch == w.branch {
+			var view *materializedGraphView
+			if view, err = w.graphs.targetView(MutationTarget{Project: w.project}, false); err == nil {
+				graph = view.snapshot.graph
+			}
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("loading graph: %w", err)
 	}
