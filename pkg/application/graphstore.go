@@ -63,9 +63,10 @@ type DocumentMutation struct {
 	LogicalPath string
 	// Content is the complete document after the write; nil removes it.
 	Content []byte
-	// ExpectedBlob is the Git blob ID of the document a replacement replaces
-	// (GitBlobID); a mismatch is an ErrorGraphConflict, never a retryable
-	// condition (d-tac-wgw). Empty for a creation or a removal.
+	// ExpectedBlob is the Git blob ID of the document a replacement replaces or
+	// a removal removes (GitBlobID); a mismatch is an ErrorGraphConflict, never a
+	// retryable condition (d-tac-wgw). Empty for a creation, or for a removal
+	// that only asks the path to be gone.
 	ExpectedBlob string
 	Message      string
 }

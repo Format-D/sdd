@@ -174,7 +174,14 @@ func RunGraphStoreTests(t *testing.T, factory func(*testing.T) GraphStoreFixture
 	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentReplacement) {
 		t.Fatalf("ReadDocument after replace = %+v, %v", current, err)
 	}
-	removed, err := publisher.PublishDocument(ctx, remove, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Message: "remove"})
+	_, err = publisher.PublishDocument(ctx, remove, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, ExpectedBlob: sdd.GitBlobID(fixture.DocumentContent), Message: "remove"})
+	if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorGraphConflict {
+		t.Fatalf("PublishDocument remove against the replaced blob = %v, want %s", err, sdd.ErrorGraphConflict)
+	}
+	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentReplacement) {
+		t.Fatalf("a refused removal must leave the document: %+v, %v", current, err)
+	}
+	removed, err := publisher.PublishDocument(ctx, remove, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, ExpectedBlob: sdd.GitBlobID(fixture.DocumentReplacement), Message: "remove"})
 	if err != nil || !removed.Absent {
 		t.Fatalf("PublishDocument remove = %+v, %v; want absent", removed, err)
 	}

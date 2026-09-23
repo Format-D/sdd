@@ -231,13 +231,29 @@ func (a *Application) StartWIP(ctx context.Context, identity RequestIdentity, pr
 	})
 }
 
-// FinishWIP removes the named WIP marker from the target. Removing a marker
-// that is already absent succeeds and never removes another one.
+// FinishWIP removes the named WIP marker from the target, conditioned on the
+// marker as it was read, so a marker recreated meanwhile under the same path
+// stays. Removing a marker that is already absent succeeds and never removes
+// another one.
 func (a *Application) FinishWIP(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, target MutationTarget, key PublicationKey, markerID string) (DocumentPublication, error) {
-	return a.PublishDocument(ctx, identity, project, binding, DocumentWrite{
-		Target: target, Publication: key,
-		Mutation: DocumentMutation{LogicalPath: filepath.ToSlash(model.WIPMarkerPath(markerID)), Message: "sdd: wip done " + markerID},
-	})
+	logicalPath := filepath.ToSlash(model.WIPMarkerPath(markerID))
+	if target.Project == "" {
+		target.Project = project
+	}
+	if published, exists, err := a.lookupDocumentPublication(ctx, identity, target, key, logicalPath); err != nil {
+		return DocumentPublication{}, err
+	} else if exists {
+		return published, nil
+	}
+	current, err := a.readDocument(ctx, identity, target, logicalPath)
+	if err != nil {
+		return DocumentPublication{}, err
+	}
+	mutation := DocumentMutation{LogicalPath: logicalPath, Message: "sdd: wip done " + markerID}
+	if !current.Absent {
+		mutation.ExpectedBlob = GitBlobID(current.Content)
+	}
+	return a.PublishDocument(ctx, identity, project, binding, DocumentWrite{Target: target, Publication: key, Mutation: mutation})
 }
 
 // WIPMarkerID allocates the identity of a marker the resolved principal starts.

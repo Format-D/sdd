@@ -342,6 +342,9 @@ func (s *FilesystemGraphStore) PublishDocument(ctx context.Context, key app.Publ
 			}
 			return app.DocumentPublication{Absent: true}, nil
 		}
+		if mutation.ExpectedBlob != "" && app.GitBlobID(current.Content) != mutation.ExpectedBlob {
+			return app.DocumentPublication{}, &app.ApplicationError{Code: app.ErrorGraphConflict, Message: "the document changed since it was read", Revision: current.Revision}
+		}
 		root, openErr := os.OpenRoot(s.dir)
 		if openErr != nil {
 			return app.DocumentPublication{}, openErr
