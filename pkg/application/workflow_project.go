@@ -110,11 +110,13 @@ func (w *WorkflowSession) targetRuntime(project ProjectID, required Access) (*Pr
 	return runtime, err
 }
 
-// authorizeTarget is targetRuntime without the runtime — the gate a write in
-// another project passes before the application resolves it again for the
-// write itself. At home it costs nothing.
+// authorizeTarget is targetRuntime without the runtime — the gate a write
+// passes before its intent is recorded, so a principal without write access is
+// refused before anything is remembered rather than at the publication the
+// application authorizes again. A read at home costs nothing: the session
+// resolved the home project for reading when it opened.
 func (w *WorkflowSession) authorizeTarget(project ProjectID, required Access) error {
-	if project == "" || project == w.project {
+	if (project == "" || project == w.project) && required == AccessRead {
 		return nil
 	}
 	_, err := w.targetRuntime(project, required)

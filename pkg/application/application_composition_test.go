@@ -188,6 +188,27 @@ Project B is readable as an authorized dependency.`), 0o644); err != nil {
 	if _, err := application.CreateEntry(t.Context(), reader, "project-a", workflow.Binding(), sdd.EntryDraft{}); applicationErrorCode(err) != sdd.ErrorWriteDenied {
 		t.Fatalf("read-only mutation = %v", err)
 	}
+	// A write the dialogue reaches at home is refused before its intent is
+	// recorded, not at the publication: the reader's groom removal leaves no
+	// pending operation behind.
+	groom, err := workflow.Start(t.Context(), reader, sdd.WorkflowStartRequest{Canonical: "groom"})
+	if err != nil {
+		t.Fatalf("read-only groom start: %v", err)
+	}
+	if _, err := workflow.Advance(t.Context(), reader, sdd.WorkflowAdvanceRequest{Instance: groom.Instance, Report: map[string]any{"candidates": "1. stale marker 20260101-000000-someone"}}); err != nil {
+		t.Fatalf("read-only groom sweep: %v", err)
+	}
+	_, err = workflow.Advance(t.Context(), reader, sdd.WorkflowAdvanceRequest{Instance: groom.Instance, Report: map[string]any{
+		"chooser": "walk", "choice": "removeMarker", "userWords": "remove it", "fields": map[string]any{"staleMarker": "20260101-000000-someone"},
+	}})
+	if applicationErrorCode(err) != sdd.ErrorWriteDenied {
+		t.Fatalf("read-only marker removal = %v, want %s before any intent", err, sdd.ErrorWriteDenied)
+	}
+	if _, position, err := application.ResumeWorkflow(t.Context(), reader, sdd.WorkflowResumeRequest{SessionID: workflow.ID(), ClientName: "reader-mcp"}); err != nil {
+		t.Fatal(err)
+	} else if position.PendingOperation != nil {
+		t.Fatalf("a refused write must record no intent: %+v", position.PendingOperation)
+	}
 
 	aliceWorkflow, _, err := application.OpenWorkflow(t.Context(), alice, "project-a", sdd.WorkflowOpenRequest{ClientName: "alice-mcp"})
 	if err != nil {
