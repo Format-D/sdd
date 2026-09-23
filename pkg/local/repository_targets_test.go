@@ -73,7 +73,7 @@ func TestRepositoryTargetPublishesCaptureThroughOneCommit(t *testing.T) {
 func TestRepositoryTargetsReloadConfiguration(t *testing.T) {
 	repo := newGitRepository(t)
 	repo.write(".sdd/config.yaml", "repo_id: committed\ndefault_branch: main\n")
-	targets := repo.targets("example")
+	targets := repo.targets()
 	for _, tt := range []struct {
 		name         string
 		localID      string
@@ -109,9 +109,9 @@ func TestRepositoryTargetsReloadConfiguration(t *testing.T) {
 	}
 }
 
-func (r *gitRepository) targets(project sdd.ProjectID) *local.GitWorktreeAcquirer {
+func (r *gitRepository) targets() *local.GitWorktreeAcquirer {
 	r.t.Helper()
-	targets, err := local.NewRepositoryTargets(project, r.root, filepath.Join(r.root, "global-config.yaml"))
+	targets, err := local.NewRepositoryTargets("example", r.root, filepath.Join(r.root, "global-config.yaml"))
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func (r *gitRepository) captureApplication(t *testing.T, runner pkgllm.Runner) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	targets := r.targets("example")
+	targets := r.targets()
 	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: "example"}, DefaultBranch: "main",
 		Graph: graph, Targets: targets, Branches: targets, LLM: runner,
