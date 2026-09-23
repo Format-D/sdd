@@ -38,10 +38,17 @@ type FilesystemGraphStore struct {
 	mu             sync.Mutex
 	snapshots      map[string]*retainedSnapshot
 	publicationGit *GitFinalizer
-	// lineage maps a revision this store published to the revision it replaced,
-	// so a read can be shown to include an earlier write of this process.
+	// lineage maps a published revision to the revision it replaced, so a read
+	// can be shown to include an earlier write. It is cached from the lineage
+	// file under the runtime directory, which every store over this graph
+	// directory appends to and reads, so a reader is never limited to the
+	// writes of its own instance or process.
 	lineage map[string]string
 }
+
+// lineageFile is the append-only record of published revisions, one line per
+// publication: the revision written, then the revision it replaced.
+const lineageFile = ".sdd-runtime/lineage"
 
 func NewFilesystemGraphStore(options FilesystemGraphStoreOptions) (*FilesystemGraphStore, error) {
 	if options.Project == "" {

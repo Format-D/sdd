@@ -119,19 +119,34 @@ func (s *FilesystemGraphStore) leaseSnapshot(retained *retainedSnapshot) *app.Ac
 }
 
 // includesRevision reports whether the current revision carries the required
-// one: equal revisions, or on a Git-backed target a commit that is an ancestor
-// of the branch head.
+// one: equal revisions, a revision the lineage file shows the current one
+// descends from, or on a Git-backed target a commit that is an ancestor of the
+// branch head. It runs under the graph lock.
 func (s *FilesystemGraphStore) includesRevision(ctx context.Context, current, required string) (bool, error) {
-	for node, seen := current, map[string]bool{}; node != "" && !seen[node]; node = s.lineage[node] {
-		if node == required {
-			return true, nil
-		}
-		seen[node] = true
+	if s.descendsFrom(current, required) {
+		return true, nil
+	}
+	if err := s.loadLineage(); err != nil {
+		return false, err
+	}
+	if s.descendsFrom(current, required) {
+		return true, nil
 	}
 	if s.publicationGit == nil || !isGitRevision(required) {
 		return false, nil
 	}
 	return s.publicationGit.isAncestor(ctx, required)
+}
+
+// descendsFrom walks the cached lineage from current back to required.
+func (s *FilesystemGraphStore) descendsFrom(current, required string) bool {
+	for node, seen := current, map[string]bool{}; node != "" && !seen[node]; node = s.lineage[node] {
+		if node == required {
+			return true
+		}
+		seen[node] = true
+	}
+	return false
 }
 
 func isGitRevision(revision string) bool {

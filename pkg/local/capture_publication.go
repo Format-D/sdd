@@ -128,7 +128,10 @@ func (s *FilesystemGraphStore) committedOnBranch(ctx context.Context, logicalPat
 	return committed, err
 }
 
-// recordLineage remembers which revision a publication advanced from.
+// recordLineage remembers which revision a publication advanced from, in
+// memory and in the lineage file; it runs under the graph lock. A failure to
+// append is not a failed publication: the write is on disk, and only a later
+// includes-revision read loses its proof.
 func (s *FilesystemGraphStore) recordLineage(before, after string) {
 	if before == "" || after == "" || before == after {
 		return
@@ -137,6 +140,33 @@ func (s *FilesystemGraphStore) recordLineage(before, after string) {
 		s.lineage = map[string]string{}
 	}
 	s.lineage[after] = before
+	file, err := os.OpenFile(filepath.Join(s.dir, filepath.FromSlash(lineageFile)), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(file, "%s %s\n", after, before)
+	_ = file.Close()
+}
+
+// loadLineage merges the lineage file into the in-memory map.
+func (s *FilesystemGraphStore) loadLineage() error {
+	raw, err := os.ReadFile(filepath.Join(s.dir, filepath.FromSlash(lineageFile)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if s.lineage == nil {
+		s.lineage = map[string]string{}
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		after, before, ok := strings.Cut(line, " ")
+		if ok && after != "" && before != "" {
+			s.lineage[after] = before
+		}
+	}
+	return nil
 }
 
 func (s *FilesystemGraphStore) readExistingEntry(ctx context.Context, logicalPath string) (_ app.EntryPublication, _ bool, err error) {
