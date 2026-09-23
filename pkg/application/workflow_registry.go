@@ -448,11 +448,19 @@ func (w *WorkflowSession) wipTarget(ctx *engine.Context) (MutationTarget, error)
 
 // workflowBranchFields is the application-owned registry of procedure state
 // fields carrying branch authority, in precedence order: capture state names
-// captureBranch, published entries use resolvedCaptureBranch, implementation
-// state names workBranch. A procedure that introduces another branch-bearing
-// field must register it here, or its reads and writes silently fall back to
-// the session binding.
-var workflowBranchFields = [...]string{"captureBranch", "resolvedCaptureBranch", "workBranch"}
+// captureBranch, published entries use resolvedCaptureBranch. The
+// implementation procedure holds no branch field of its own beyond the
+// marker's baseBranch (20260914-180822-d-cpt-9kv): its reads and captures
+// follow the session binding, which the agent pushes on entering the work
+// branch and pops on returning to base. A procedure that introduces another
+// branch-bearing field must register it here, or its reads and writes silently
+// fall back to the session binding.
+var workflowBranchFields = [...]string{"captureBranch", "resolvedCaptureBranch"}
+
+// targetSourceBinding names the durable session binding as the branch source
+// in a target provenance; a state field names itself; empty means the
+// project's configured default.
+const targetSourceBinding = "binding"
 
 // effectiveTarget is the sole target precedence rule, shared by graph reads
 // and graph writes: the project is the instance's (d-cpt-yjc); the branch is
@@ -466,6 +474,15 @@ func (w *WorkflowSession) effectiveTarget(store *engine.Store) (MutationTarget, 
 }
 
 func (w *WorkflowSession) effectiveTargetFor(project ProjectID, store *engine.Store) (MutationTarget, bool) {
+	target, source := w.effectiveTargetSource(project, store)
+	return target, source == targetSourceBinding
+}
+
+// effectiveTargetSource is effectiveTargetFor with the branch's provenance:
+// the state field that chose it, targetSourceBinding for the session binding,
+// or empty for the configured default. A failed read reports it, so an agent
+// sees which field sent the read to a branch that has no checkout.
+func (w *WorkflowSession) effectiveTargetSource(project ProjectID, store *engine.Store) (MutationTarget, string) {
 	entryID, _ := workflowStoreString(store, "entryId")
 	for _, field := range workflowBranchFields {
 		// A preflight result does not pin the branch before publication.
@@ -473,13 +490,13 @@ func (w *WorkflowSession) effectiveTargetFor(project ProjectID, store *engine.St
 			continue
 		}
 		if branch, _ := workflowStoreString(store, field); branch != "" {
-			return MutationTarget{Project: project, Branch: branch}, false
+			return MutationTarget{Project: project, Branch: branch}, field
 		}
 	}
 	if w.branch != "" && project == w.project {
-		return MutationTarget{Project: project, Branch: w.branch}, true
+		return MutationTarget{Project: project, Branch: w.branch}, targetSourceBinding
 	}
-	return MutationTarget{Project: project}, false
+	return MutationTarget{Project: project}, ""
 }
 
 // concreteEffectiveTarget resolves the configured default without mutating

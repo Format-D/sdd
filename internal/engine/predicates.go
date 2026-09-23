@@ -71,7 +71,6 @@ var presenceFields = map[string]string{
 	"hasPlan":         "plan",
 	"hasContract":     "contract",
 	"hasBaseBranch":   "baseBranch",
-	"hasWorkBranch":   "workBranch",
 	"hasDoneEntry":    "doneEntry",
 	"hasCandidates":   "candidates",
 	"hasSynthesis":    "synthesis",

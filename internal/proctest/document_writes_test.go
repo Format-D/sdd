@@ -112,7 +112,7 @@ func TestImplementation_WIPStartRetryPublishesOneMarker(t *testing.T) {
 	finalizer := &failingFinalizer{failCall: 1}
 	world := proctest.NewWorld(t, proctest.WithEntries(implAnchorEntry()), proctest.WithFinalizers(finalizer))
 	session := world.Open(t, "wip-retry")
-	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID}, "main")
+	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID})
 	failed, err := session.AnswerErr(t, serve.Instance, "setup", "inPlace", map[string]any{"wipDescription": "implement the anchor"}, "in place")
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestImplementation_WIPStartRetryPublishesOneMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proctest.RequireStep(t, retried, "workTarget")
+	proctest.RequireStep(t, retried, "work")
 	if again := requireSingleMarker(t, world.GraphDir); again.ID != marker.ID {
 		t.Fatalf("retry published another marker: %s then %s", marker.ID, again.ID)
 	}

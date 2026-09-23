@@ -120,7 +120,7 @@ func entryOnDisk(t *testing.T, graphDir, id string) bool {
 
 // implToSetup drives a fresh instance through contract and baseTarget,
 // logging the anchor read the contract step requires.
-func implToSetup(t *testing.T, session *proctest.Session, params map[string]any, baseBranch string) *sdd.WorkflowServe {
+func implToSetup(t *testing.T, session *proctest.Session, params map[string]any) *sdd.WorkflowServe {
 	t.Helper()
 	serve := session.Start(t, "implementation", params)
 	proctest.RequireStep(t, serve, "contract")
@@ -130,7 +130,7 @@ func implToSetup(t *testing.T, session *proctest.Session, params map[string]any,
 		"widenReport": "searched constraints and prior attempts; nothing beyond the chain",
 	})
 	proctest.RequireStep(t, serve, "baseTarget")
-	serve = session.Report(t, serve.Instance, map[string]any{"baseBranch": baseBranch})
+	serve = session.Report(t, serve.Instance, map[string]any{"baseBranch": "main"})
 	proctest.RequireStep(t, serve, "setup")
 	return serve
 }
@@ -139,13 +139,31 @@ func implToSetup(t *testing.T, session *proctest.Session, params map[string]any,
 // tracked in-place setup to the working junction.
 func startImplementationAtWork(t *testing.T, session *proctest.Session) *sdd.WorkflowServe {
 	t.Helper()
-	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID}, "main")
+	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID})
 	serve = session.Answer(t, serve.Instance, "setup", "inPlace",
 		map[string]any{"wipDescription": "implement the anchor"}, "in place, small scope")
-	proctest.RequireStep(t, serve, "workTarget")
-	serve = session.Report(t, serve.Instance, map[string]any{"workBranch": "main"})
 	proctest.RequireStep(t, serve, "work")
 	return serve
+}
+
+// bindWorkBranch is the host entering the work branch: the agent declares it
+// as the session binding, the only carrier of the work branch
+// (20260914-180822-d-cpt-9kv).
+func bindWorkBranch(t *testing.T, session *proctest.Session, branch string) {
+	t.Helper()
+	if err := session.WF.BindBranch(t.Context(), session.World.Identity, branch, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// returnToBase is the host back on the base branch after landing: the agent
+// clears the binding, then the work branch's checkout disappears.
+func returnToBase(t *testing.T, session *proctest.Session, workBranch string) {
+	t.Helper()
+	if err := session.WF.BindBranch(t.Context(), session.World.Identity, "", true); err != nil {
+		t.Fatal(err)
+	}
+	session.World.DropBranch(t, workBranch)
 }
 
 // driveCapture runs an already-started capture child through playback and
@@ -199,16 +217,45 @@ func resumedInstanceServe(t *testing.T, world *proctest.World, sessionID sdd.Ses
 	return nil
 }
 
-func assertBindingClearSelfGuard(t *testing.T, instructions string) {
+// assertLandingOrder checks the landing serve says merge, return to base,
+// clear the binding, then report landed (20260914-180822-d-cpt-9kv).
+func assertLandingOrder(t *testing.T, instructions string) {
 	t.Helper()
 	for _, want := range []string{
-		"Only if this run actually entered a worktree",
-		"only after the host has reported a successful landing",
-		"clear the session branch binding",
-		"If this run did not enter a worktree or its landing was not successful, make no session branch-binding change",
+		"The host places the work on `baseBranch`",
+		"The host returns to `baseBranch`",
+		"clear it now, through the engine's session branch-binding capability, before the work branch or worktree is removed",
+		"Report `landed` only after steps 1 to 3",
 	} {
 		if !strings.Contains(instructions, want) {
-			t.Fatalf("closeout instructions missing binding guard %q:\n%s", want, instructions)
+			t.Fatalf("landing instructions missing %q:\n%s", want, instructions)
+		}
+	}
+}
+
+// assertCloseoutOwnsNoBinding checks the closeout no longer carries binding
+// guidance: the pop happens before landed is reported.
+func assertCloseoutOwnsNoBinding(t *testing.T, instructions string) {
+	t.Helper()
+	if strings.Contains(instructions, "binding") {
+		t.Fatalf("closeout instructions still speak of the session binding:\n%s", instructions)
+	}
+	if !strings.Contains(instructions, "**evaluate**") {
+		t.Fatalf("closeout instructions lost the evaluation offer:\n%s", instructions)
+	}
+}
+
+// assertBindingDeclaration checks the setup serve tells the agent to declare
+// the work branch as the session binding once the host is on it.
+func assertBindingDeclaration(t *testing.T, instructions string) {
+	t.Helper()
+	for _, want := range []string{
+		"Entering the work branch is host work",
+		"declare that branch as the session branch binding",
+		"In-place and quick runs stay on `baseBranch` and declare nothing",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("setup instructions missing %q:\n%s", want, instructions)
 		}
 	}
 }
@@ -232,15 +279,14 @@ func TestImplementation_HappyPathTracked(t *testing.T) {
 	proctest.RequireStep(t, serve, "baseTarget")
 	serve = session.Report(t, instance, map[string]any{"baseBranch": "main"})
 	proctest.RequireStep(t, serve, "setup")
+	assertBindingDeclaration(t, serve.Instructions)
 	serve = session.Answer(t, instance, "setup", "inPlace",
 		map[string]any{"wipDescription": "implement the anchor"}, "in place, small scope")
-	proctest.RequireStep(t, serve, "workTarget")
+	proctest.RequireStep(t, serve, "work")
 	marker := requireSingleMarker(t, world.GraphDir)
 	if marker.Content != "implement the anchor" {
 		t.Fatalf("marker content = %q, want the wipDescription", marker.Content)
 	}
-	serve = session.Report(t, instance, map[string]any{"workBranch": "main"})
-	proctest.RequireStep(t, serve, "work")
 
 	// One working-loop cycle: continue self-loops with the running notes.
 	serve = session.Answer(t, instance, "work", "continue",
@@ -258,22 +304,28 @@ func TestImplementation_HappyPathTracked(t *testing.T) {
 		t.Fatalf("record should route to the landing user chooser, got %+v", serve.PendingChooser)
 	}
 	requireSingleMarker(t, world.GraphDir)
+	assertLandingOrder(t, serve.Instructions)
 
 	serve = session.Answer(t, instance, "landing", "landed", nil, "merged successfully")
 	proctest.RequireStep(t, serve, "closeout")
 	requireNoMarkers(t, world.GraphDir)
-	assertBindingClearSelfGuard(t, serve.Instructions)
+	assertCloseoutOwnsNoBinding(t, serve.Instructions)
 
 	serve = session.Answer(t, instance, "closeout", "finish", nil, "done for today")
 	proctest.RequireStatus(t, serve, "completed")
 }
 
+// TestImplementation_RoutesBaseAndWorkBranchesInEveryMode drives every tracked
+// mode: the marker sits on the explicit base branch, the work-time reads follow
+// the session binding the agent pushes on entering the work branch, and
+// landing is reported after the host is back on base and the binding is
+// popped (20260914-180822-d-cpt-9kv).
 func TestImplementation_RoutesBaseAndWorkBranchesInEveryMode(t *testing.T) {
 	tests := []struct {
 		mode       string
 		workBranch string
 	}{
-		{mode: "inPlace", workBranch: "main"},
+		{mode: "inPlace"},
 		{mode: "branch", workBranch: "feature"},
 		{mode: "worktree", workBranch: "feature"},
 	}
@@ -301,62 +353,108 @@ func TestImplementation_RoutesBaseAndWorkBranchesInEveryMode(t *testing.T) {
 			}
 			serve = session.Report(t, instance, map[string]any{"baseBranch": "main"})
 			proctest.RequireStep(t, serve, "setup")
+			assertBindingDeclaration(t, serve.Instructions)
 			setupFields := map[string]any{"wipDescription": "route targets"}
 			if test.mode == "worktree" {
 				setupFields["worktreeMode"] = "worktree"
 			}
 			serve = session.Answer(t, instance, "setup", test.mode, setupFields, test.mode)
-			proctest.RequireStep(t, serve, "workTarget")
-			if !slices.Contains(serve.Missing, "workBranch") {
-				t.Fatalf("workTarget must still require an explicit workBranch report: missing=%v", serve.Missing)
-			}
-			for _, want := range []string{
-				"current session binding",
-				"natural candidate and default suggestion",
-				"report `workBranch` explicitly",
-				"engine never copies or adopts the binding",
-			} {
-				if !strings.Contains(serve.Instructions, want) {
-					t.Fatalf("workTarget instructions missing %q:\n%s", want, serve.Instructions)
-				}
-			}
-			if test.mode == "worktree" {
-				for _, want := range []string{
-					"after the host has entered that worktree",
-					"session branch-binding capability",
-					"does not fill this procedure's state automatically",
-				} {
-					if !strings.Contains(serve.Instructions, want) {
-						t.Fatalf("worktree instructions missing %q:\n%s", want, serve.Instructions)
-					}
-				}
-			} else if strings.Contains(serve.Instructions, "after the host has entered that worktree") {
-				t.Fatalf("%s workTarget rendered worktree-only declaration:\n%s", test.mode, serve.Instructions)
+			proctest.RequireStep(t, serve, "work")
+			if slices.Contains(serve.Missing, "workBranch") {
+				t.Fatalf("the run must not collect a work branch: missing=%v", serve.Missing)
 			}
 			// The marker lives on the explicit base branch, never the work branch.
 			requireSingleMarker(t, world.GraphDir)
 			requireNoMarkers(t, featureDir)
-			serve = session.Report(t, instance, map[string]any{"workBranch": test.workBranch})
-			proctest.RequireStep(t, serve, "work")
+			if test.workBranch != "" {
+				bindWorkBranch(t, session, test.workBranch)
+			}
 
 			serve = session.Answer(t, instance, "work", "conclude", nil, "mode routing verified")
 			proctest.RequireStep(t, serve, "record")
 			serve = session.Report(t, instance, map[string]any{"doneEntry": implDoneID})
 			proctest.RequireStep(t, serve, "landing")
+			assertLandingOrder(t, serve.Instructions)
 			if test.mode == "worktree" {
 				serve = session.Answer(t, instance, "landing", "defer", nil, "not landed yet")
 				proctest.RequireStep(t, serve, "landing")
-				if strings.Contains(serve.Instructions, "clear the session branch binding") {
-					t.Fatalf("deferred landing rendered clear guidance before landing:\n%s", serve.Instructions)
-				}
 				requireSingleMarker(t, world.GraphDir)
+			}
+			if test.workBranch != "" {
+				returnToBase(t, session, test.workBranch)
 			}
 			serve = session.Answer(t, instance, "landing", "landed", nil, "landed successfully")
 			proctest.RequireStep(t, serve, "closeout")
 			requireNoMarkers(t, world.GraphDir)
-			assertBindingClearSelfGuard(t, serve.Instructions)
+			assertCloseoutOwnsNoBinding(t, serve.Instructions)
 		})
 	}
+}
+
+// TestImplementation_AbandonAfterSetupRemovesMarker is the abandon path
+// (20260914-180822-d-cpt-9kv): a tracked run dropped at the working junction
+// removes its marker on base and ends without a done; a quick run ends the
+// same way with nothing to remove.
+func TestImplementation_AbandonAfterSetupRemovesMarker(t *testing.T) {
+	t.Run("tracked", func(t *testing.T) {
+		world := proctest.NewWorld(t, proctest.WithEntries(implAnchorEntry()))
+		session := world.Open(t, "impl-abandon")
+		serve := startImplementationAtWork(t, session)
+		instance := serve.Instance
+		if !strings.Contains(serve.Instructions, "**abandon**") {
+			t.Fatalf("work junction offers no abandon path:\n%s", serve.Instructions)
+		}
+		requireSingleMarker(t, world.GraphDir)
+
+		serve = session.Answer(t, instance, "work", "abandon", nil, "drop this run")
+		proctest.RequireStatus(t, serve, "abandoned")
+		requireNoMarkers(t, world.GraphDir)
+	})
+	t.Run("quick", func(t *testing.T) {
+		world := proctest.NewWorld(t, proctest.WithEntries(implAnchorEntry()))
+		session := world.Open(t, "impl-abandon-quick")
+		serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID})
+		instance := serve.Instance
+		serve = session.Answer(t, instance, "setup", "quick", nil, "too small to track")
+		proctest.RequireStep(t, serve, "work")
+
+		serve = session.Answer(t, instance, "work", "abandon", nil, "drop this run")
+		proctest.RequireStatus(t, serve, "abandoned")
+		requireNoMarkers(t, world.GraphDir)
+	})
+}
+
+// TestImplementation_StaleBindingCanBeCleared: a session bound to a branch
+// whose checkout is gone must still replay, so the binding can be cleared and
+// the session resumed (20260914-180822-d-cpt-9kv).
+func TestImplementation_StaleBindingCanBeCleared(t *testing.T) {
+	featureDir := t.TempDir()
+	proctest.WriteEntry(t, featureDir, implAnchorEntry())
+	world := proctest.NewWorld(t,
+		proctest.WithEntries(implAnchorEntry()),
+		proctest.WithBranchDir("feature", featureDir),
+	)
+	session := world.Open(t, "impl-stale")
+	serve := startImplementationAtWork(t, session)
+	instance := serve.Instance
+	bindWorkBranch(t, session, "feature")
+	world.DropBranch(t, "feature")
+
+	if _, _, err := world.App.ResumeWorkflow(t.Context(), world.Identity, sdd.WorkflowResumeRequest{SessionID: session.ID, ClientName: "impl-stale-resume"}); err == nil {
+		t.Fatal("resuming a session bound to a branch without a checkout succeeded")
+	} else if !strings.Contains(err.Error(), `session is bound to branch "feature"`) || !strings.Contains(err.Error(), "clear it") {
+		t.Fatalf("stale binding error = %v, want the binding named with the clear advice", err)
+	}
+
+	refreshed, err := world.App.RefreshWorkflow(t.Context(), world.Identity, session.ID)
+	if err != nil {
+		t.Fatalf("loading the session to clear its binding: %v", err)
+	}
+	if err := refreshed.BindBranch(t.Context(), world.Identity, "", true); err != nil {
+		t.Fatalf("clearing the stale binding: %v", err)
+	}
+	resumed := resumedInstanceServe(t, world, session.ID, "impl-stale-resumed", instance)
+	proctest.RequireStep(t, resumed, "work")
 }
 
 func TestImplementation_QuickSkipsMarker(t *testing.T) {
@@ -372,10 +470,8 @@ func TestImplementation_QuickSkipsMarker(t *testing.T) {
 	})
 	session.Report(t, instance, map[string]any{"baseBranch": "main"})
 	serve = session.Answer(t, instance, "setup", "quick", nil, "too small to track")
-	proctest.RequireStep(t, serve, "workTarget")
-	requireNoMarkers(t, world.GraphDir)
-	serve = session.Report(t, instance, map[string]any{"workBranch": "main"})
 	proctest.RequireStep(t, serve, "work")
+	requireNoMarkers(t, world.GraphDir)
 
 	serve = session.Answer(t, instance, "work", "conclude", nil, "fixed")
 	proctest.RequireStep(t, serve, "record")
@@ -383,7 +479,7 @@ func TestImplementation_QuickSkipsMarker(t *testing.T) {
 	// route through wipDone would fail loudly on the unset wipMarker.
 	serve = session.Report(t, instance, map[string]any{"doneEntry": implDoneID})
 	proctest.RequireStep(t, serve, "closeout")
-	assertBindingClearSelfGuard(t, serve.Instructions)
+	assertCloseoutOwnsNoBinding(t, serve.Instructions)
 	requireNoMarkers(t, world.GraphDir)
 }
 
@@ -409,16 +505,14 @@ func TestImplementation_HoldLoopsBackToSetup(t *testing.T) {
 
 	serve = session.Answer(t, instance, "setup", "inPlace",
 		map[string]any{"wipDescription": "implement with the decided format"}, "decided, go")
-	proctest.RequireStep(t, serve, "workTarget")
-	serve = session.Report(t, instance, map[string]any{"workBranch": "main"})
 	proctest.RequireStep(t, serve, "work")
 }
 
-// TestImplementation_HoldSeedsCaptureOnBaseBranch is the behavioral half of
-// the old dispatch-declaration check for hold: the dispatched capture inherits
-// widenReport and captureBranch from baseBranch, so the captured decision
-// lands on the base store even before any work branch exists.
-func TestImplementation_HoldSeedsCaptureOnBaseBranch(t *testing.T) {
+// TestImplementation_HoldCaptureFollowsSessionBinding is the behavioral half
+// of the dispatch-declaration check for hold: the dispatched capture inherits
+// widenReport and no branch, so the captured decision lands where the session
+// binding points (20260914-180822-d-cpt-9kv), not on a branch the run names.
+func TestImplementation_HoldCaptureFollowsSessionBinding(t *testing.T) {
 	featureDir := t.TempDir()
 	proctest.WriteEntry(t, featureDir, implAnchorEntry())
 	world := proctest.NewWorld(t,
@@ -426,8 +520,9 @@ func TestImplementation_HoldSeedsCaptureOnBaseBranch(t *testing.T) {
 		proctest.WithBranchDir("feature", featureDir),
 	)
 	session := world.Open(t, "impl-hold-seed")
+	bindWorkBranch(t, session, "feature")
 
-	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID}, "feature")
+	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID})
 	instance := serve.Instance
 	serve = session.Answer(t, instance, "setup", "hold", nil, "decide the format first")
 	proctest.RequireStep(t, serve, "setup")
@@ -446,10 +541,10 @@ func TestImplementation_HoldSeedsCaptureOnBaseBranch(t *testing.T) {
 		"confidence": "medium",
 	})
 	if !entryOnDisk(t, featureDir, entryID) {
-		t.Fatalf("hold capture %s should land on the seeded baseBranch store", entryID)
+		t.Fatalf("hold capture %s should land on the session-bound store", entryID)
 	}
 	if entryOnDisk(t, world.GraphDir, entryID) {
-		t.Fatalf("hold capture %s leaked onto the default store", entryID)
+		t.Fatalf("hold capture %s leaked onto the base store", entryID)
 	}
 }
 
@@ -491,7 +586,13 @@ func TestImplementation_DoneEntryMustResolve(t *testing.T) {
 	}
 }
 
-func TestImplementation_DoneEntryResolvesAgainstWorkBranch(t *testing.T) {
+// TestImplementation_LandsAfterTheSoleCheckoutReturnsToBase is the regression
+// 20260914-180822-d-cpt-9kv asks for: the done is captured on the bound work
+// branch, the host merges, returns to base and the work branch's checkout is
+// gone — reporting landed still removes the marker on base, and the run
+// resumes on base afterwards. Before, the persisted work branch outranked the
+// binding and every read after the merge failed (20260902-160151-s-tac-mtv).
+func TestImplementation_LandsAfterTheSoleCheckoutReturnsToBase(t *testing.T) {
 	featureDir := t.TempDir()
 	proctest.WriteEntry(t, featureDir, implAnchorEntry())
 	world := proctest.NewWorld(t,
@@ -500,56 +601,52 @@ func TestImplementation_DoneEntryResolvesAgainstWorkBranch(t *testing.T) {
 	)
 	session := world.Open(t, "impl-workbranch")
 
-	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID}, "main")
+	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID})
 	instance := serve.Instance
 	serve = session.Answer(t, instance, "setup", "worktree",
 		map[string]any{"wipDescription": "target-aware reads", "worktreeMode": "worktree"}, "use a worktree")
-	proctest.RequireStep(t, serve, "workTarget")
-	serve = session.Report(t, instance, map[string]any{"workBranch": "feature"})
 	proctest.RequireStep(t, serve, "work")
+	bindWorkBranch(t, session, "feature")
 	serve = session.Answer(t, instance, "work", "conclude", nil, "contract met")
 	proctest.RequireStep(t, serve, "record")
 
-	// The real dispatched capture inherits captureBranch from workBranch, so
-	// the done signal exists only on the feature store — record's resolution
-	// must read through the work branch to find it.
+	// The real dispatched capture follows the session binding, so the done
+	// signal exists only on the feature store — record's resolution must read
+	// through the binding to find it.
 	doneID := captureDone(t, session, instance)
 	if !entryOnDisk(t, featureDir, doneID) {
-		t.Fatalf("done capture %s should land on the work branch store", doneID)
+		t.Fatalf("done capture %s should land on the bound work branch store", doneID)
 	}
 	if entryOnDisk(t, world.GraphDir, doneID) {
 		t.Fatalf("done capture %s leaked onto the base store", doneID)
 	}
 	serve = session.Report(t, instance, map[string]any{"doneEntry": doneID})
 	proctest.RequireStep(t, serve, "landing")
+	assertLandingOrder(t, serve.Instructions)
+
+	// The host merged, returned to base and deleted the work branch; the agent
+	// popped the binding. Without a checkout the work branch is unreadable.
+	returnToBase(t, session, "feature")
+	proctest.WriteEntry(t, world.GraphDir, proctest.LoadEntry(t, featureDir, doneID))
 	serve = session.Answer(t, instance, "landing", "landed", nil, "landed successfully")
 	proctest.RequireStep(t, serve, "closeout")
 	requireNoMarkers(t, world.GraphDir)
-	assertBindingClearSelfGuard(t, serve.Instructions)
-	for _, want := range []string{
-		"session branch-binding capability",
-		"does not delete the branch or worktree",
-	} {
-		if !strings.Contains(serve.Instructions, want) {
-			t.Fatalf("worktree closeout instructions missing %q:\n%s", want, serve.Instructions)
-		}
-	}
+	assertCloseoutOwnsNoBinding(t, serve.Instructions)
 
-	// Re-attaching replays the stored session through the real load path: the
-	// worktree choice and the closeout clear guidance must survive.
+	// Re-attaching replays the stored session through the real load path on
+	// base: the worktree choice survives and nothing reads the gone branch.
 	replayed := resumedInstanceServe(t, world, session.ID, "impl-workbranch-replay", instance)
 	proctest.RequireStep(t, replayed, "closeout")
 	if mode, _ := replayed.Collected["worktreeMode"].(string); mode != "worktree" {
 		t.Fatalf("replayed worktreeMode = %v, want worktree", replayed.Collected["worktreeMode"])
 	}
-	assertBindingClearSelfGuard(t, replayed.Instructions)
 }
 
 func TestImplementation_WorktreeModeIsScopedToWorktreeChoice(t *testing.T) {
 	world := proctest.NewWorld(t, proctest.WithEntries(implAnchorEntry()))
 	session := world.Open(t, "impl-scoped-mode")
 
-	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID}, "main")
+	serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID})
 	instance := serve.Instance
 	if serve.PendingChooser == nil {
 		t.Fatal("setup served no chooser")
@@ -582,62 +679,35 @@ func TestImplementation_WorktreeModeIsScopedToWorktreeChoice(t *testing.T) {
 	}
 }
 
+// TestImplementation_PreseededWorktreeModeIsSafeForNonWorktreeModes: a
+// worktreeMode seeded at start does not change the route of any other mode,
+// and no mode collects a work branch.
 func TestImplementation_PreseededWorktreeModeIsSafeForNonWorktreeModes(t *testing.T) {
 	tests := []struct {
-		mode       string
-		setup      map[string]any
-		workBranch string
+		mode  string
+		setup map[string]any
 	}{
-		{
-			mode:       "inPlace",
-			setup:      map[string]any{"wipDescription": "in-place run"},
-			workBranch: "main",
-		},
-		{
-			mode:       "branch",
-			setup:      map[string]any{"wipDescription": "branch run"},
-			workBranch: "feature",
-		},
-		{
-			mode:       "quick",
-			workBranch: "main",
-		},
+		{mode: "inPlace", setup: map[string]any{"wipDescription": "in-place run"}},
+		{mode: "branch", setup: map[string]any{"wipDescription": "branch run"}},
+		{mode: "quick"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.mode, func(t *testing.T) {
-			featureDir := t.TempDir()
-			proctest.WriteEntry(t, featureDir, implAnchorEntry())
-			proctest.WriteEntry(t, featureDir, implDoneEntry())
-			world := proctest.NewWorld(t,
-				proctest.WithEntries(implAnchorEntry(), implDoneEntry()),
-				proctest.WithBranchDir("feature", featureDir),
-			)
+			world := proctest.NewWorld(t, proctest.WithEntries(implAnchorEntry(), implDoneEntry()))
 			session := world.Open(t, "impl-preseeded-"+test.mode)
 
 			serve := implToSetup(t, session, map[string]any{
 				"anchor":       implAnchorID,
 				"worktreeMode": "worktree",
-			}, "main")
+			})
 			instance := serve.Instance
 			serve = session.Answer(t, instance, "setup", test.mode, test.setup, test.mode)
-			proctest.RequireStep(t, serve, "workTarget")
-			if !slices.Contains(serve.Missing, "workBranch") {
-				t.Fatalf("preseeded %s run must still require an explicit workBranch report: missing=%v", test.mode, serve.Missing)
-			}
-			for _, want := range []string{
-				"Only if this run actually enters a worktree",
-				"If this run does not enter a worktree, make no session branch-binding change",
-				"report `workBranch` explicitly",
-				"engine never copies or adopts the binding",
-			} {
-				if !strings.Contains(serve.Instructions, want) {
-					t.Fatalf("preseeded %s workTarget instructions missing %q:\n%s", test.mode, want, serve.Instructions)
-				}
+			proctest.RequireStep(t, serve, "work")
+			if len(serve.Missing) != 0 {
+				t.Fatalf("preseeded %s run demands a report at the working junction: missing=%v", test.mode, serve.Missing)
 			}
 
-			serve = session.Report(t, instance, map[string]any{"workBranch": test.workBranch})
-			proctest.RequireStep(t, serve, "work")
 			serve = session.Answer(t, instance, "work", "conclude", nil, "mode routing verified")
 			proctest.RequireStep(t, serve, "record")
 			serve = session.Report(t, instance, map[string]any{"doneEntry": implDoneID})
@@ -646,57 +716,7 @@ func TestImplementation_PreseededWorktreeModeIsSafeForNonWorktreeModes(t *testin
 				serve = session.Answer(t, instance, "landing", "landed", nil, "landed successfully")
 			}
 			proctest.RequireStep(t, serve, "closeout")
-			assertBindingClearSelfGuard(t, serve.Instructions)
-		})
-	}
-}
-
-func TestImplementation_WorktreeClearGuidanceSurvivesMarkerSuppression(t *testing.T) {
-	tests := []struct {
-		name   string
-		marker any
-	}{
-		{name: "nil", marker: nil},
-		{name: "empty", marker: ""},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			featureDir := t.TempDir()
-			proctest.WriteEntry(t, featureDir, implAnchorEntry())
-			proctest.WriteEntry(t, featureDir, implDoneEntry())
-			world := proctest.NewWorld(t,
-				proctest.WithEntries(implAnchorEntry(), implDoneEntry()),
-				proctest.WithBranchDir("feature", featureDir),
-			)
-			session := world.Open(t, "impl-suppressed-"+test.name)
-
-			serve := implToSetup(t, session, map[string]any{"anchor": implAnchorID}, "main")
-			instance := serve.Instance
-			serve = session.Answer(t, instance, "setup", "worktree", map[string]any{
-				"wipDescription": "marker suppression regression",
-				"worktreeMode":   "worktree",
-			}, "use a worktree")
-			proctest.RequireStep(t, serve, "workTarget")
-			serve = session.Report(t, instance, map[string]any{
-				"workBranch":   "feature",
-				"worktreeMode": test.marker,
-			})
-			proctest.RequireStep(t, serve, "work")
-
-			serve = session.Answer(t, instance, "work", "conclude", nil, "contract met")
-			proctest.RequireStep(t, serve, "record")
-			serve = session.Report(t, instance, map[string]any{"doneEntry": implDoneID})
-			proctest.RequireStep(t, serve, "landing")
-			serve = session.Answer(t, instance, "landing", "landed", nil, "landed successfully")
-			proctest.RequireStep(t, serve, "closeout")
-			assertBindingClearSelfGuard(t, serve.Instructions)
-
-			// A re-attach replays the stored session: the suppressed marker
-			// must not cost the closeout its clear guidance.
-			replayed := resumedInstanceServe(t, world, session.ID, "impl-suppressed-replay-"+test.name, instance)
-			proctest.RequireStep(t, replayed, "closeout")
-			assertBindingClearSelfGuard(t, replayed.Instructions)
+			assertCloseoutOwnsNoBinding(t, serve.Instructions)
 		})
 	}
 }

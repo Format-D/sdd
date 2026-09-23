@@ -1333,8 +1333,18 @@ func (g *workflowGraphs) CurrentFor(store *engine.Store) (*model.Graph, error) {
 }
 
 func (g *workflowGraphs) viewFor(store *engine.Store) (*materializedGraphView, error) {
-	target, fromBinding := g.workflow.effectiveTarget(store)
-	return g.targetView(target, fromBinding)
+	target, source := g.workflow.effectiveTargetSource(g.workflow.projectFor(store), store)
+	view, err := g.targetView(target, source == targetSourceBinding)
+	if err != nil && source != "" && source != targetSourceBinding {
+		// The acquisition boundary speaks of a mutation target; a graph read
+		// that a state field sent to an unavailable branch names the read and
+		// the field (20260914-180822-d-cpt-9kv).
+		var acquisition *targetAcquisitionError
+		if errors.As(err, &acquisition) && acquisition.target.Branch == target.Branch {
+			return nil, fmt.Errorf("reading the graph on branch %q, chosen by the %s state field, failed: %w", target.Branch, source, err)
+		}
+	}
+	return view, err
 }
 
 func (g *workflowGraphs) targetView(target MutationTarget, fromBinding bool) (*materializedGraphView, error) {

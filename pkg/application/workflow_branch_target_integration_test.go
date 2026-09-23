@@ -139,7 +139,9 @@ Branch-targeted workflow reads need to follow the written artifact.
 		"chooser": "setup", "choice": "worktree", "userWords": "use a worktree",
 		"fields": map[string]any{"wipDescription": "target-aware workflow reads", "worktreeMode": "worktree"},
 	})
-	implementation = advanceWorkflow(t, workflow, identity, implementation.Instance, map[string]any{"workBranch": "explicit"})
+	if implementation.Step != "work" {
+		t.Fatalf("implementation step = %q, want work right after setup (no work-branch report)", implementation.Step)
+	}
 	implementation = advanceWorkflow(t, workflow, identity, implementation.Instance, map[string]any{
 		"chooser": "work", "choice": "conclude", "userWords": "implementation complete",
 	})
@@ -166,8 +168,10 @@ Branch-targeted workflow reads need to follow the written artifact.
 	if captureServe.Step != "playback" {
 		t.Fatalf("capture step = %q, want playback", captureServe.Step)
 	}
-	if statement := playbackTargetStatement(t, captureServe); !strings.Contains(statement, "explicit") || !strings.Contains(statement, "captureBranch") {
-		t.Fatalf("playback target statement = %q, want the explicitly seeded work branch", statement)
+	// The done follows the session binding — the branch the work is on —
+	// because the implementation run seeds no branch (20260914-180822-d-cpt-9kv).
+	if statement := playbackTargetStatement(t, captureServe); !strings.Contains(statement, "session branch binding") || strings.Contains(statement, "captureBranch") {
+		t.Fatalf("playback target statement = %q, want the session binding, not a seeded branch", statement)
 	}
 	captureServe = advanceWorkflow(t, workflow, identity, capture, map[string]any{
 		"chooser": "playback", "choice": "confirm", "userWords": "confirm",
@@ -206,14 +210,14 @@ Branch-targeted workflow reads need to follow the written artifact.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(explicitDir, donePath)); err != nil {
-		t.Fatalf("explicit capture-branch done file: %v", err)
+	if _, err := os.Stat(filepath.Join(workDir, donePath)); err != nil {
+		t.Fatalf("session-bound work branch done file: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(baseDir, donePath)); !os.IsNotExist(err) {
 		t.Fatalf("base branch unexpectedly contains done file: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workDir, donePath)); !os.IsNotExist(err) {
-		t.Fatalf("session-bound branch unexpectedly contains explicit capture file: %v", err)
+	if _, err := os.Stat(filepath.Join(explicitDir, donePath)); !os.IsNotExist(err) {
+		t.Fatalf("unbound branch unexpectedly contains the done file: %v", err)
 	}
 	if got := workflowBranchFileCount(t, filepath.Join(baseDir, "wip")); got != 1 {
 		t.Fatalf("base WIP markers = %d, want 1", got)

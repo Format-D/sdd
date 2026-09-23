@@ -218,12 +218,15 @@ func TestWorkflowEffectiveTargetPrecedenceIsSharedByReadsAndWrites(t *testing.T)
 		{field: "captureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 		{field: "resolvedCaptureBranch", wantWrite: "main", wantEntry: currentID},
 		{field: "resolvedCaptureBranch", published: true, wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
-		{field: "workBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
+		// workBranch left procedure state (20260914-180822-d-cpt-9kv): a
+		// stale value in an older session's store no longer outranks the
+		// binding.
+		{field: "workBranch", wantWrite: "main", wantEntry: currentID},
 		{binding: "work", wantRead: "work", wantWrite: "work", wantEntry: workID},
 		{binding: "work", field: "captureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 		{binding: "work", field: "resolvedCaptureBranch", wantRead: "work", wantWrite: "work", wantEntry: workID},
 		{binding: "work", field: "resolvedCaptureBranch", published: true, wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
-		{binding: "work", field: "workBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
+		{binding: "work", field: "workBranch", wantRead: "work", wantWrite: "work", wantEntry: workID},
 	}
 	for _, tt := range tests {
 		name := fmt.Sprintf("binding=%q field=%q published=%v", tt.binding, tt.field, tt.published)
@@ -368,14 +371,29 @@ func TestWorkflowSessionBindingDriftProvenanceOnlyForBindingTargets(t *testing.T
 		t.Fatalf("binding drift overclaimed checkout state: %v", err)
 	}
 
-	for _, field := range []string{"captureBranch", "workBranch"} {
-		_, explicitErr := (&workflowGraphs{workflow: workflow}).CurrentFor(workflowTargetStore(t, map[string]any{field: "drifted"}))
-		if explicitErr == nil {
-			t.Fatalf("%s drift unexpectedly succeeded", field)
-		}
-		if strings.Contains(explicitErr.Error(), "session is bound") {
-			t.Fatalf("%s drift was mislabeled as session binding: %v", field, explicitErr)
-		}
+	// A state field that sends a read to an unavailable branch is named with
+	// the read (20260914-180822-d-cpt-9kv); it is never labeled as the binding.
+	unbound := &WorkflowSession{
+		app: workflow.app, project: "example", identity: workflow.identity, ctx: t.Context(),
+	}
+	_, explicitErr := (&workflowGraphs{workflow: unbound}).CurrentFor(workflowTargetStore(t, map[string]any{"captureBranch": "drifted"}))
+	if explicitErr == nil {
+		t.Fatal("captureBranch drift unexpectedly succeeded")
+	}
+	if strings.Contains(explicitErr.Error(), "session is bound") {
+		t.Fatalf("captureBranch drift was mislabeled as session binding: %v", explicitErr)
+	}
+	if !strings.Contains(explicitErr.Error(), `reading the graph on branch "drifted", chosen by the captureBranch state field`) {
+		t.Fatalf("captureBranch drift did not name the read and the field: %v", explicitErr)
+	}
+	if !errors.Is(explicitErr, driftCause) {
+		t.Fatalf("captureBranch drift did not preserve original cause: %v", explicitErr)
+	}
+	// workBranch left procedure state: a stale value in an old session's store
+	// is ignored, so the read follows the binding and reports it as such.
+	_, staleErr := (&workflowGraphs{workflow: workflow}).CurrentFor(workflowTargetStore(t, map[string]any{"workBranch": "elsewhere"}))
+	if staleErr == nil || !strings.Contains(staleErr.Error(), `session is bound to branch "drifted"`) {
+		t.Fatalf("stale workBranch did not fall through to the binding: %v", staleErr)
 	}
 
 	for name, readErr := range map[string]error{
