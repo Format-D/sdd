@@ -3,7 +3,6 @@ package local
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -36,31 +35,6 @@ func publishBytes(root *os.Root, name string, data []byte) error {
 		return errors.Join(err, root.Remove(temporary))
 	}
 	return syncRootDir(root, directory)
-}
-
-// writeJSONAtomic is the path-addressed form, for the graph store which sits
-// outside this subsystem's containment root.
-func writeJSONAtomic(filename string, value any) error {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(filename), ".sdd-publish-*")
-	if err != nil {
-		return err
-	}
-	name := temporary.Name()
-	defer func() { _ = os.Remove(name) }()
-	if _, err := temporary.Write(encoded); err != nil {
-		return errors.Join(err, temporary.Close())
-	}
-	if err := errors.Join(temporary.Sync(), temporary.Close()); err != nil {
-		return err
-	}
-	if err := os.Rename(name, filename); err != nil {
-		return err
-	}
-	return syncDir(filepath.Dir(filename))
 }
 
 func temporaryName(directory string) (string, error) {

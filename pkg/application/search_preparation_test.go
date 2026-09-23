@@ -169,26 +169,19 @@ func TestSearchReadYourWritesAndLocalSourceLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := sdd.EntryDocument{LogicalPath: "2026/01/01-100000-s-tac-new.md", Frontmatter: map[string]any{"type": "signal", "kind": "gap", "layer": "tactical", "summary": "New"}, Body: "New write"}
-	apply := func(id string, doc sdd.EntryDocument) string {
-		before, err := graph.Current(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		batch := sdd.MutationBatch{ID: id, Changes: []sdd.DocumentChange{{LogicalPath: doc.LogicalPath, Document: &doc, CanonicalBytes: []byte("---\ntype: signal\nkind: gap\nlayer: tactical\nsummary: New\n---\n" + doc.Body)}}}
-		batch.Digest, err = sdd.MutationBatchDigest(batch)
-		if err != nil {
-			t.Fatal(err)
-		}
-		result, err := graph.Apply(t.Context(), before.Revision(), batch, nil)
+	apply := func(sequence uint64, doc sdd.EntryDocument) string {
+		key := sdd.PublicationKey{Session: "s_search", Sequence: sequence, Discriminator: "newEntry"}
+		batch := sdd.MutationBatch{ID: key.String(), Changes: []sdd.DocumentChange{{LogicalPath: doc.LogicalPath, Document: &doc, CanonicalBytes: []byte("---\ntype: signal\nkind: gap\nlayer: tactical\nsummary: New\n---\n" + doc.Body)}}}
+		result, err := graph.PublishEntry(t.Context(), key, batch, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return result.Revision
 	}
-	written := apply("write-one", document)
+	written := apply(1, document)
 	document.LogicalPath = "2026/01/01-100000-s-tac-two.md"
 	document.Body = "Second write"
-	latest := apply("write-two", document)
+	latest := apply(2, document)
 	app := preparationApp(t, base, nil, func(ctx context.Context, target sdd.SearchTarget) error {
 		for item, err := range target.Entries(ctx) {
 			if err != nil {

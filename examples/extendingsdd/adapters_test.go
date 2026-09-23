@@ -13,12 +13,6 @@ import (
 type graphStore struct{}
 
 func (graphStore) Current(context.Context) (*sdd.Snapshot, error) { return &sdd.Snapshot{}, nil }
-func (graphStore) Apply(context.Context, string, sdd.MutationBatch, sdd.StagedBlobReader) (sdd.ApplyResult, error) {
-	return sdd.ApplyResult{State: sdd.MutationApplied, Revision: "r2"}, nil
-}
-func (graphStore) Reconcile(context.Context, string, string) (sdd.ApplyResult, error) {
-	return sdd.ApplyResult{State: sdd.MutationApplied, Revision: "r2"}, nil
-}
 func (graphStore) ReadAttachmentPage(context.Context, string, string, int64, int) (sdd.AttachmentPage, error) {
 	return sdd.AttachmentPage{}, nil
 }

@@ -392,7 +392,6 @@ func New(options Options) *cli.Command {
 			searchCmd(),
 			serveCmd(),
 			sessionsCmd(),
-			recoverCmd(),
 			syncCmd(),
 			repoCmd(),
 			statsCmd(),

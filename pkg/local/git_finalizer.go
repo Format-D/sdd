@@ -2,8 +2,10 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -46,29 +48,45 @@ func (f GitFinalizer) Finalize(ctx context.Context, mutation app.AppliedMutation
 		return nil
 	}
 	seen := map[string]bool{}
-	var paths []string
-	addPath := func(logical string) {
+	var paths, added, removed []string
+	addPath := func(logical string, remove bool) {
 		if logical == "" {
 			return
 		}
 		path := filepath.Join(f.GraphDir, filepath.FromSlash(logical))
-		if !seen[path] {
-			seen[path] = true
-			paths = append(paths, path)
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		paths = append(paths, path)
+		if remove {
+			removed = append(removed, path)
+		} else {
+			added = append(added, path)
 		}
 	}
 	for _, change := range mutation.Batch.Changes {
-		addPath(change.LogicalPath)
+		addPath(change.LogicalPath, change.Delete)
 	}
 	for _, attachment := range mutation.Batch.Attachments {
-		addPath(attachment.LogicalPath)
+		addPath(attachment.LogicalPath, false)
 	}
 	if len(paths) == 0 {
 		return fmt.Errorf("git finalizer: mutation %s has no paths", mutation.BatchID)
 	}
-	addArgs := append([]string{"-C", f.Checkout, "add", "--all", "--"}, paths...)
-	if out, err := exec.CommandContext(ctx, "git", addArgs...).CombinedOutput(); err != nil {
-		return fmt.Errorf("git finalizer add: %s (%w)", strings.TrimSpace(string(out)), err)
+	if len(added) > 0 {
+		addArgs := append([]string{"-C", f.Checkout, "add", "--all", "--"}, added...)
+		if out, err := exec.CommandContext(ctx, "git", addArgs...).CombinedOutput(); err != nil {
+			return fmt.Errorf("git finalizer add: %s (%w)", strings.TrimSpace(string(out)), err)
+		}
+	}
+	if len(removed) > 0 {
+		// A removal may already be staged by an attempt whose commit failed;
+		// --ignore-unmatch keeps the retry from failing on the missing path.
+		rmArgs := append([]string{"-C", f.Checkout, "rm", "--quiet", "--cached", "--ignore-unmatch", "--"}, removed...)
+		if out, err := exec.CommandContext(ctx, "git", rmArgs...).CombinedOutput(); err != nil {
+			return fmt.Errorf("git finalizer rm: %s (%w)", strings.TrimSpace(string(out)), err)
+		}
 	}
 	message := mutation.Batch.Message
 	if message == "" {
@@ -93,4 +111,35 @@ func (f GitFinalizer) lookupTrailer(ctx context.Context, trailer string) (string
 		return "", fmt.Errorf("git finalizer log: %s (%w)", strings.TrimSpace(string(out)), err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// readCommittedFile returns a graph file's bytes at a revision, and whether the
+// revision carries it at all.
+func (f GitFinalizer) readCommittedFile(ctx context.Context, revision, logicalPath string) ([]byte, bool, error) {
+	filename := path.Join(f.GraphDir, logicalPath)
+	listed, err := exec.CommandContext(ctx, "git", "-C", f.Checkout, "ls-tree", "--name-only", revision, "--", filename).Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("listing %s at %s: %w", filename, revision, err)
+	}
+	if strings.TrimSpace(string(listed)) == "" {
+		return nil, false, nil
+	}
+	content, err := exec.CommandContext(ctx, "git", "-C", f.Checkout, "show", revision+":"+filename).Output()
+	if err != nil {
+		return nil, false, fmt.Errorf("reading %s at %s: %w", filename, revision, err)
+	}
+	return content, true, nil
+}
+
+// isAncestor reports whether the revision is reachable from the branch head.
+func (f GitFinalizer) isAncestor(ctx context.Context, revision string) (bool, error) {
+	err := exec.CommandContext(ctx, "git", "-C", f.Checkout, "merge-base", "--is-ancestor", revision, f.Branch).Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git ancestry of %s on %s: %w", revision, f.Branch, err)
 }

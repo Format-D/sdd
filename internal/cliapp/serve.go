@@ -308,12 +308,6 @@ func buildLocalApplication(ctx context.Context, cmd *cli.Command, graphDir, sddD
 	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: project, DisplayName: displayName}, DefaultBranch: cfg.DefaultBranch, Language: language,
 		Dependencies: dependencies, Graph: localBranchReadStore{GraphStore: graph, branches: targets}, Targets: targets, Branches: targets,
-		Recovery: sdd.RecoveryAuthorizerFunc(func(_ context.Context, request sdd.RecoveryAccessRequest) error {
-			if request.Actor.Subject != request.OriginalSubject {
-				return &sdd.ApplicationError{Code: sdd.ErrorWriteDenied, Message: "cross-principal recovery is not authorized by the local runtime"}
-			}
-			return nil
-		}),
 		Embedder: embeddings, SearchIndex: optionalSearchIndex(embeddings, baseIndex),
 		LLM: runner,
 	})

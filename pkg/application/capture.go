@@ -75,9 +75,9 @@ func (a *Application) entryPublicationExists(ctx context.Context, identity Reque
 		return false, err
 	}
 	defer func() { err = errors.Join(err, acquired.Release()) }()
-	publisher, ok := acquired.Graph.(EntryPublicationStore)
-	if !ok {
-		return false, fmt.Errorf("entry publication is not configured for project %s", target.Project)
+	publisher, err := publicationStoreOf(acquired, target.Project)
+	if err != nil {
+		return false, err
 	}
 	_, exists, err = publisher.LookupEntryPublication(ctx, key, entryID)
 	return exists, err
@@ -125,9 +125,9 @@ func (a *Application) CreateEntry(ctx context.Context, identity RequestIdentity,
 			err = errors.Join(err, acquired.Release())
 		}
 	}()
-	publisher, ok := acquired.Graph.(EntryPublicationStore)
-	if !ok {
-		return result, fmt.Errorf("entry publication is not configured for project %s", project)
+	publisher, err := publicationStoreOf(acquired, project)
+	if err != nil {
+		return result, err
 	}
 	publication, exists, err := publisher.LookupEntryPublication(ctx, draft.Publication, draft.EntryID)
 	if err != nil {
@@ -177,9 +177,9 @@ func (a *Application) CreateEntry(ctx context.Context, identity RequestIdentity,
 		if err != nil {
 			return result, err
 		}
-		publisher, ok = acquired.Graph.(EntryPublicationStore)
-		if !ok {
-			return result, fmt.Errorf("entry publication is not configured for project %s", project)
+		publisher, err = publicationStoreOf(acquired, project)
+		if err != nil {
+			return result, err
 		}
 		publication, err = publisher.PublishEntry(ctx, draft.Publication, batch, ownedBlobReader{store: a.blobs, ref: SessionRef{Subject: principal.Subject, Session: binding.SessionID}})
 		if err != nil {

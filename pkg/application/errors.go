@@ -30,14 +30,13 @@ const (
 )
 
 type ApplicationError struct {
-	Code       ErrorCode
-	Message    string
-	Project    ProjectRef
-	Action     *ProjectAction
-	ApplyState ApplyState
-	Revision   string
-	Version    uint32
-	Cause      error
+	Code     ErrorCode
+	Message  string
+	Project  ProjectRef
+	Action   *ProjectAction
+	Revision string
+	Version  uint32
+	Cause    error
 	// Ended carries the act that ended the session on an ErrorSessionEnded, so
 	// the caller can be told who/when/why.
 	Ended *SessionEnd

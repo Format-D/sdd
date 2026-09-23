@@ -36,12 +36,6 @@ func (s workflowTargetGraphStore) AcquireSnapshot(ctx context.Context, q Snapsho
 }
 
 func (s workflowTargetGraphStore) Current(context.Context) (*Snapshot, error) { return s.snapshot, nil }
-func (workflowTargetGraphStore) Apply(context.Context, string, MutationBatch, StagedBlobReader) (ApplyResult, error) {
-	return ApplyResult{}, nil
-}
-func (workflowTargetGraphStore) Reconcile(context.Context, string, string) (ApplyResult, error) {
-	return ApplyResult{}, nil
-}
 func (workflowTargetGraphStore) ReadAttachmentPage(context.Context, string, string, int64, int) (AttachmentPage, error) {
 	return AttachmentPage{}, nil
 }
@@ -443,7 +437,7 @@ func TestWorkflowWIPRequiresExplicitBaseBranchBeforeCallingApplication(t *testin
 			if !ok {
 				t.Fatalf("%s command is not registered", tt.command)
 			}
-			err := command.Fn(&engine.Context{Store: workflowTargetStore(t, tt.values)})
+			_, err := command.Prepare(&engine.Context{Store: workflowTargetStore(t, tt.values)})
 			if err == nil || err.Error() != "WIP write requires an explicit baseBranch" {
 				t.Fatalf("%s error = %v", tt.command, err)
 			}

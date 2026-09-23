@@ -109,7 +109,7 @@ func (w *WorkflowSession) reportWorkflowNewEntryEffects(ctx *engine.Context) ([]
 }
 
 func (w *WorkflowSession) stagedAt(position uint64) (map[string]string, error) {
-	_, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID(), AccessRead)
+	_, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func (w *WorkflowSession) verifyCapturePreflight(ctx *engine.Context) error {
 }
 
 func (w *WorkflowSession) capturePreflightState(ctx *engine.Context) (bool, bool, error) {
-	_, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID(), AccessRead)
+	_, _, stored, err := w.app.resolveSession(w.ctx, w.identity, w.ID())
 	if err != nil {
 		return false, false, err
 	}

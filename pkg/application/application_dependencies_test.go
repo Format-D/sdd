@@ -16,12 +16,6 @@ type staticGraphStore struct {
 }
 
 func (s staticGraphStore) Current(context.Context) (*sdd.Snapshot, error) { return s.snapshot, nil }
-func (staticGraphStore) Apply(context.Context, string, sdd.MutationBatch, sdd.StagedBlobReader) (sdd.ApplyResult, error) {
-	return sdd.ApplyResult{}, nil
-}
-func (staticGraphStore) Reconcile(context.Context, string, string) (sdd.ApplyResult, error) {
-	return sdd.ApplyResult{}, nil
-}
 func (s staticGraphStore) ReadAttachmentPage(_ context.Context, _ string, filename string, offset int64, limit int) (sdd.AttachmentPage, error) {
 	content := []byte(s.attachment)
 	end := int(offset) + limit

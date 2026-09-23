@@ -24,7 +24,6 @@ type InfoResult struct {
 	Participant string
 	Language    string
 	Search      string
-	Recovery    string
 }
 
 type ViewRequest struct {
@@ -36,10 +35,6 @@ type ViewRequest struct {
 	// Budget bounds the view's scaling parts on the serve path; the zero
 	// value is unbounded — explicit pulls arrive complete (d-tac-rzi).
 	Budget types.ViewBudget
-	// OmitRecovery skips the appended recovery notices — for injected lanes
-	// whose session already carries them via sessionInfo, so a pending
-	// recovery is served once, not once per lane.
-	OmitRecovery bool
 }
 
 type ViewResult struct {

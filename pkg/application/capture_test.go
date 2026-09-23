@@ -3,8 +3,10 @@ package application_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	sdd "github.com/networkteam/sdd/pkg/application"
@@ -113,4 +115,22 @@ func TestCaptureUsesAcquiredLanguageAndDependencies(t *testing.T) {
 	if got := loadEntryByID(t, f.graphDir, created.EntryID).Summary; got != created.Summary {
 		t.Fatalf("stored summary = %q, want %q", got, created.Summary)
 	}
+}
+
+// failOnceFinalizer fails its first call and succeeds afterwards, so a retry
+// proves that required finalizers run on every attempt.
+type failOnceFinalizer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (*failOnceFinalizer) Name() string { return "fail-once" }
+func (f *failOnceFinalizer) Finalize(context.Context, sdd.AppliedMutation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls == 1 {
+		return fmt.Errorf("finalizer failed once")
+	}
+	return nil
 }

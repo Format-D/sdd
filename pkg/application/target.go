@@ -128,35 +128,3 @@ func (a FixedTargetAcquirer) Acquire(_ context.Context, target MutationTarget) (
 		Release: func() error { return nil },
 	}, nil
 }
-
-// RecoveryVerb is deliberately finer-grained than write access. Runtime
-// compositions authorize each recovery action and the nonterminal reconcile
-// refresh afresh.
-type RecoveryVerb string
-
-const (
-	RecoveryReconcile      RecoveryVerb = "reconcile"
-	RecoveryApply          RecoveryVerb = "apply"
-	RecoveryDiscard        RecoveryVerb = "discard"
-	RecoveryFinalizeRetry  RecoveryVerb = "finalize-retry"
-	RecoveryAbandonUnknown RecoveryVerb = "abandon-unknown"
-	RecoveryBindTarget     RecoveryVerb = "bind-target"
-)
-
-type RecoveryAccessRequest struct {
-	Actor           Principal
-	Target          MutationTarget
-	Verb            RecoveryVerb
-	OriginalSubject string
-	OriginalSession SessionID
-}
-
-type RecoveryAuthorizer interface {
-	AuthorizeRecovery(context.Context, RecoveryAccessRequest) error
-}
-
-type RecoveryAuthorizerFunc func(context.Context, RecoveryAccessRequest) error
-
-func (f RecoveryAuthorizerFunc) AuthorizeRecovery(ctx context.Context, request RecoveryAccessRequest) error {
-	return f(ctx, request)
-}

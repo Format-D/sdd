@@ -72,7 +72,7 @@ func (w *WorkflowSession) registerWorkflowQueries(registry *engine.Registry) err
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"participant": info.Participant, "language": info.Language, "search": info.Search, "recovery": info.Recovery}, nil
+			return map[string]any{"participant": info.Participant, "language": info.Language, "search": info.Search}, nil
 		},
 	}); err != nil {
 		return err
@@ -107,15 +107,11 @@ func (w *WorkflowSession) registerWorkflowQueries(registry *engine.Registry) err
 			if strings.TrimSpace(layout) == "" {
 				return nil, fmt.Errorf("viewLayout needs arg layout")
 			}
-			omitRecovery := false
-			if rec, ok := args["recovery"].(bool); ok && !rec {
-				omitRecovery = true
-			}
 			view, err := w.graphs.viewFor(ctx.Store)
 			if err != nil {
 				return nil, err
 			}
-			result, err := w.app.viewFromSnapshot(w.ctx, w.identity, view.runtime, view.snapshot, ViewRequest{Layout: layout, Budget: servedViewBudget, OmitRecovery: omitRecovery})
+			result, err := w.app.viewFromSnapshot(w.ctx, w.identity, view.runtime, view.snapshot, ViewRequest{Layout: layout, Budget: servedViewBudget})
 			if err != nil {
 				return nil, err
 			}
@@ -280,95 +276,43 @@ func (w *WorkflowSession) registerWorkflowWrites(registry *engine.Registry) erro
 		return err
 	}
 	return registry.RegisterCommand(engine.Command{
-		Doc:          engine.FuncDoc{Name: "replaceSummary", Doc: "Writes the user-supplied corrected summary onto the entry named by entryId.", Reads: []string{"entryId", "correctedSummary"}},
-		MutatesGraph: true,
-		Fn: func(ctx *engine.Context) error {
-			id, ok := workflowStoreString(ctx.Store, "entryId")
-			if !ok {
-				return fmt.Errorf("replaceSummary: entryId is not set")
-			}
-			text, ok := workflowStoreString(ctx.Store, "correctedSummary")
-			if !ok {
-				return fmt.Errorf("replaceSummary: correctedSummary is not set")
-			}
-			target, fromBinding := w.effectiveTargetFor(w.instanceProject(ctx.Instance), ctx.Store)
-			if err := w.authorizeTarget(target.Project, AccessWrite); err != nil {
-				return err
-			}
-			result, err := w.app.ReplaceSummary(w.ctx, w.identity, target.Project, w.binding, target, id, text)
-			err = w.withSessionBindingTargetError(err, fromBinding)
-			if err == nil {
-				w.binding = result.Binding
-			}
-			return err
-		},
+		Doc:              engine.FuncDoc{Name: "replaceSummary", Doc: "Writes the user-supplied corrected summary onto the entry named by entryId, conditioned on the document the correction was read from.", Reads: []string{"entryId", "correctedSummary"}},
+		MutatesGraph:     true,
+		GraphIndependent: true,
+		Prepare:          w.prepareWorkflowReplaceSummary,
+		Fn:               w.runWorkflowReplaceSummary,
+		Effects:          w.reportWorkflowReplaceSummaryEffects,
 	})
 }
 
 func (w *WorkflowSession) registerWorkflowWIP(registry *engine.Registry) error {
 	if err := registry.RegisterCommand(engine.Command{
-		Doc:          engine.FuncDoc{Name: "wipStart", Doc: "Creates an exclusive WIP marker for the store's anchor entry on baseBranch, described by wipDescription.", Reads: []string{"anchor", "baseBranch", "wipDescription", "participants"}, Writes: []string{"wipMarker"}},
-		MutatesGraph: true,
-		Fn: func(ctx *engine.Context) error {
-			anchor, ok := workflowStoreString(ctx.Store, "anchor")
-			if !ok {
-				return fmt.Errorf("wipStart: anchor is not set")
-			}
-			description, _ := workflowStoreString(ctx.Store, "wipDescription")
-			target, err := w.wipTarget(ctx)
-			if err != nil {
-				return err
-			}
-			marker, result, err := w.app.StartWIP(w.ctx, w.identity, target.Project, w.binding, target, anchor, description)
-			if err != nil {
-				return err
-			}
-			w.binding = result.Binding
-			return ctx.Store.WriteEngine("wipMarker", marker)
-		},
+		Doc:              engine.FuncDoc{Name: "wipStart", Doc: "Creates an exclusive WIP marker for the store's anchor entry on baseBranch, described by wipDescription.", Reads: []string{"anchor", "baseBranch", "wipDescription", "participants"}, Writes: []string{"wipMarker"}},
+		MutatesGraph:     true,
+		GraphIndependent: true,
+		Prepare:          w.prepareWorkflowWIPStart,
+		Fn:               w.runWorkflowWIPStart,
+		Effects:          w.reportWorkflowWIPEffects,
 	}); err != nil {
 		return err
 	}
 	if err := registry.RegisterCommand(engine.Command{
-		Doc:          engine.FuncDoc{Name: "wipDone", Doc: "Removes the WIP marker named by the store's wipMarker field from baseBranch.", Reads: []string{"wipMarker", "baseBranch"}, Writes: []string{"wipMarker"}},
-		MutatesGraph: true,
-		Fn: func(ctx *engine.Context) error {
-			marker, ok := workflowStoreString(ctx.Store, "wipMarker")
-			if !ok {
-				return fmt.Errorf("wipDone: wipMarker is not set")
-			}
-			target, err := w.wipTarget(ctx)
-			if err != nil {
-				return err
-			}
-			result, err := w.app.FinishWIP(w.ctx, w.identity, target.Project, w.binding, target, marker)
-			if err != nil {
-				return err
-			}
-			w.binding = result.Binding
-			return ctx.Store.WriteEngine("wipMarker", nil)
-		},
+		Doc:              engine.FuncDoc{Name: "wipDone", Doc: "Removes the WIP marker named by the store's wipMarker field from baseBranch.", Reads: []string{"wipMarker", "baseBranch"}, Writes: []string{"wipMarker"}},
+		MutatesGraph:     true,
+		GraphIndependent: true,
+		Prepare:          w.prepareWorkflowWIPDone,
+		Fn:               w.runWorkflowWIPDone,
+		Effects:          w.reportWorkflowWIPEffects,
 	}); err != nil {
 		return err
 	}
 	return registry.RegisterCommand(engine.Command{
-		Doc:          engine.FuncDoc{Name: "wipRemove", Doc: "Removes the WIP marker named by the store's staleMarker field (groom's orphaned-marker cleanup).", Reads: []string{"staleMarker"}},
-		MutatesGraph: true,
-		Fn: func(ctx *engine.Context) error {
-			marker, ok := workflowStoreString(ctx.Store, "staleMarker")
-			if !ok {
-				return fmt.Errorf("wipRemove: staleMarker is not set")
-			}
-			project := w.instanceProject(ctx.Instance)
-			if err := w.authorizeTarget(project, AccessWrite); err != nil {
-				return err
-			}
-			result, err := w.app.FinishWIP(w.ctx, w.identity, project, w.binding, MutationTarget{}, marker)
-			if err == nil {
-				w.binding = result.Binding
-			}
-			return err
-		},
+		Doc:              engine.FuncDoc{Name: "wipRemove", Doc: "Removes the WIP marker named by the store's staleMarker field (groom's orphaned-marker cleanup).", Reads: []string{"staleMarker"}},
+		MutatesGraph:     true,
+		GraphIndependent: true,
+		Prepare:          w.prepareWorkflowWIPRemove,
+		Fn:               w.runWorkflowWIPRemove,
+		Effects:          w.reportWorkflowWIPEffects,
 	})
 }
 
