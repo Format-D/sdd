@@ -137,9 +137,9 @@ func TestImplementation_WIPStartRetryPublishesOneMarker(t *testing.T) {
 	}
 }
 
-// Removing a marker that is already gone succeeds: the landing still closes
-// the run, and no other marker is touched.
-func TestImplementation_LandingRemovesAnAbsentMarkerWithoutError(t *testing.T) {
+// Removing a marker that is already gone succeeds: recording the done still
+// closes the run, and no other marker is touched.
+func TestImplementation_RemovingAnAbsentMarkerSucceeds(t *testing.T) {
 	world := proctest.NewWorld(t, proctest.WithEntries(implAnchorEntry()))
 	session := world.Open(t, "wip-absent")
 	serve := startImplementationAtWork(t, session)
@@ -154,11 +154,9 @@ func TestImplementation_LandingRemovesAnAbsentMarkerWithoutError(t *testing.T) {
 	proctest.RequireStep(t, serve, "record")
 	doneID := captureDone(t, session, instance)
 	serve = session.Report(t, instance, map[string]any{"doneEntry": doneID})
-	proctest.RequireStep(t, serve, "landing")
-	serve = session.Answer(t, instance, "landing", "landed", nil, "merged")
 	proctest.RequireStep(t, serve, "closeout")
 	if ids := wipMarkerIDs(t, world.GraphDir); len(ids) != 1 || ids[0] != "20260601-130000-someone-else" {
-		t.Fatalf("markers after landing = %v, want only the other participant's", ids)
+		t.Fatalf("markers after the done = %v, want only the other participant's", ids)
 	}
 	if _, err := os.Stat(other); err != nil {
 		t.Fatalf("another participant's marker was removed: %v", err)

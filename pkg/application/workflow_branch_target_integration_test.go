@@ -30,7 +30,7 @@ func (a workflowBranchTargets) Acquire(_ context.Context, target sdd.MutationTar
 	}, nil
 }
 
-func TestWorkflowBranchTargetCarriesCaptureReadsThroughImplementationLanding(t *testing.T) {
+func TestWorkflowBranchTargetCarriesCaptureReadsThroughImplementationClose(t *testing.T) {
 	const anchorID = "20260717-121000-s-tac-anc"
 	baseDir := t.TempDir()
 	workDir := t.TempDir()
@@ -132,12 +132,11 @@ Branch-targeted workflow reads need to follow the written artifact.
 		t.Fatal(err)
 	}
 	implementation = advanceWorkflow(t, workflow, identity, implementation.Instance, map[string]any{
-		"contract": "target-aware reads through landing", "widenReport": "anchor inspected",
+		"contract": "target-aware reads through the closing done", "widenReport": "anchor inspected",
 	})
-	implementation = advanceWorkflow(t, workflow, identity, implementation.Instance, map[string]any{"baseBranch": "main"})
 	implementation = advanceWorkflow(t, workflow, identity, implementation.Instance, map[string]any{
 		"chooser": "setup", "choice": "worktree", "userWords": "use a worktree",
-		"fields": map[string]any{"wipDescription": "target-aware workflow reads", "worktreeMode": "worktree"},
+		"fields": map[string]any{"wipDescription": "target-aware workflow reads"},
 	})
 	if implementation.Step != "work" {
 		t.Fatalf("implementation step = %q, want work right after setup (no work-branch report)", implementation.Step)
@@ -169,7 +168,7 @@ Branch-targeted workflow reads need to follow the written artifact.
 		t.Fatalf("capture step = %q, want playback", captureServe.Step)
 	}
 	// The done follows the session binding — the branch the work is on —
-	// because the implementation run seeds no branch (20260914-180822-d-cpt-9kv).
+	// because the implementation run seeds no branch (20260923-230855-d-cpt-34w).
 	if statement := playbackTargetStatement(t, captureServe); !strings.Contains(statement, "session branch binding") || strings.Contains(statement, "captureBranch") {
 		t.Fatalf("playback target statement = %q, want the session binding, not a seeded branch", statement)
 	}
@@ -203,8 +202,8 @@ Branch-targeted workflow reads need to follow the written artifact.
 		t.Fatalf("capture produced = %+v", captureServe.Produced)
 	}
 	implementation = advanceWorkflow(t, workflow, identity, implementation.Instance, map[string]any{"doneEntry": doneEntry})
-	if implementation.Step != "landing" {
-		t.Fatalf("work-branch done should reach landing before merge, got %q", implementation.Step)
+	if implementation.Step != "closeout" {
+		t.Fatalf("work-branch done should reach closeout with no landing report, got %q", implementation.Step)
 	}
 	donePath, err := model.IDToRelPath(doneEntry)
 	if err != nil {
@@ -219,8 +218,11 @@ Branch-targeted workflow reads need to follow the written artifact.
 	if _, err := os.Stat(filepath.Join(explicitDir, donePath)); !os.IsNotExist(err) {
 		t.Fatalf("unbound branch unexpectedly contains the done file: %v", err)
 	}
-	if got := workflowBranchFileCount(t, filepath.Join(baseDir, "wip")); got != 1 {
-		t.Fatalf("base WIP markers = %d, want 1", got)
+	// The session was bound to the work branch at setup, so the marker was
+	// written there and removed there right after the done
+	// (20260923-230855-d-cpt-34w); base never held it.
+	if got := workflowBranchFileCount(t, filepath.Join(baseDir, "wip")); got != 0 {
+		t.Fatalf("base WIP markers = %d, want 0", got)
 	}
 	if got := workflowBranchFileCount(t, filepath.Join(workDir, "wip")); got != 0 {
 		t.Fatalf("work WIP markers = %d, want 0", got)

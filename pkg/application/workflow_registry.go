@@ -287,7 +287,7 @@ func (w *WorkflowSession) registerWorkflowWrites(registry *engine.Registry) erro
 
 func (w *WorkflowSession) registerWorkflowWIP(registry *engine.Registry) error {
 	if err := registry.RegisterCommand(engine.Command{
-		Doc:              engine.FuncDoc{Name: "wipStart", Doc: "Creates an exclusive WIP marker for the store's anchor entry on baseBranch, described by wipDescription.", Reads: []string{"anchor", "baseBranch", "wipDescription", "participants"}, Writes: []string{"wipMarker"}},
+		Doc:              engine.FuncDoc{Name: "wipStart", Doc: "Creates an exclusive WIP marker for the store's anchor entry on the session's current branch, described by wipDescription.", Reads: []string{"anchor", "wipDescription", "participants"}, Writes: []string{"wipMarker"}},
 		MutatesGraph:     true,
 		GraphIndependent: true,
 		Prepare:          w.prepareWorkflowWIPStart,
@@ -297,7 +297,7 @@ func (w *WorkflowSession) registerWorkflowWIP(registry *engine.Registry) error {
 		return err
 	}
 	if err := registry.RegisterCommand(engine.Command{
-		Doc:              engine.FuncDoc{Name: "wipDone", Doc: "Removes the WIP marker named by the store's wipMarker field from baseBranch.", Reads: []string{"wipMarker", "baseBranch"}, Writes: []string{"wipMarker"}},
+		Doc:              engine.FuncDoc{Name: "wipDone", Doc: "Removes the WIP marker named by the store's wipMarker field from the session's current branch.", Reads: []string{"wipMarker"}, Writes: []string{"wipMarker"}},
 		MutatesGraph:     true,
 		GraphIndependent: true,
 		Prepare:          w.prepareWorkflowWIPDone,
@@ -432,14 +432,13 @@ func (w *WorkflowSession) runWorkflowNewEntry(ctx *engine.Context) error {
 	return w.session.SinkErr()
 }
 
-// wipTarget is the WIP marker's authority: the instance's project on the
-// explicit baseBranch its state names.
+// wipTarget is the WIP marker's authority: the session's current branch,
+// resolved to a concrete branch the intent records (20260923-230855-d-cpt-34w).
 func (w *WorkflowSession) wipTarget(ctx *engine.Context) (MutationTarget, error) {
-	branch, _ := workflowStoreString(ctx.Store, "baseBranch")
-	if branch == "" {
-		return MutationTarget{}, fmt.Errorf("WIP write requires an explicit baseBranch")
+	target, _, _, err := w.concreteEffectiveTarget(ctx.Store)
+	if err != nil {
+		return MutationTarget{}, err
 	}
-	target := MutationTarget{Project: w.instanceProject(ctx.Instance), Branch: branch}
 	if err := w.authorizeTarget(target.Project, AccessWrite); err != nil {
 		return MutationTarget{}, err
 	}
@@ -449,12 +448,9 @@ func (w *WorkflowSession) wipTarget(ctx *engine.Context) (MutationTarget, error)
 // workflowBranchFields is the application-owned registry of procedure state
 // fields carrying branch authority, in precedence order: capture state names
 // captureBranch, published entries use resolvedCaptureBranch. The
-// implementation procedure holds no branch field of its own beyond the
-// marker's baseBranch (20260914-180822-d-cpt-9kv): its reads and captures
-// follow the session binding, which the agent pushes on entering the work
-// branch and pops on returning to base. A procedure that introduces another
-// branch-bearing field must register it here, or its reads and writes silently
-// fall back to the session binding.
+// implementation procedure holds none (20260923-230855-d-cpt-34w). A procedure
+// that introduces another branch-bearing field must register it here, or its
+// reads and writes silently fall back to the session binding.
 var workflowBranchFields = [...]string{"captureBranch", "resolvedCaptureBranch"}
 
 // targetSourceBinding names the durable session binding as the branch source

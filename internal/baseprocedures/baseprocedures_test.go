@@ -113,13 +113,11 @@ func TestEntries_EmbeddedSetLoads(t *testing.T) {
 	}
 }
 
-// TestImplementationKeepsRetiredWorkTargetForReplay: runs recorded before
-// 20260914-180822-d-cpt-9kv logged a transition through workTarget and reports
-// of workBranch. Replay refuses a transition to an unknown step and a report
-// of an undeclared field, so the procedure keeps both — the step as a
-// pass-through to work, the field declared and optional — while such sessions
-// may still be resumed; neither is collected or read by the live flow.
-func TestImplementationKeepsRetiredWorkTargetForReplay(t *testing.T) {
+// TestImplementationHoldsNoBranchState: the run's reads and writes follow the
+// session's current branch, so the procedure declares no branch field and has
+// no base-target, work-target or landing step (20260923-230855-d-cpt-34w).
+// Older sessions that ran them replay as history.
+func TestImplementationHoldsNoBranchState(t *testing.T) {
 	entries, err := Entries()
 	if err != nil {
 		t.Fatal(err)
@@ -132,29 +130,14 @@ func TestImplementationKeepsRetiredWorkTargetForReplay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		step := spec.StepByID["workTarget"]
-		if step == nil {
-			t.Fatal("implementation lost the retired workTarget step; sessions recorded before d-cpt-9kv no longer replay")
-		}
-		if len(step.Collect) != 0 || len(step.Transitions) != 1 || step.Transitions[0].When != nil || step.Transitions[0].To != "work" {
-			t.Fatalf("workTarget must be a bare pass-through to work, got collect=%v transitions=%+v", step.Collect, step.Transitions)
-		}
-		decl, ok := spec.State["workBranch"]
-		if !ok || !decl.Optional {
-			t.Fatalf("workBranch must stay declared and optional for replay, got %+v (declared %v)", decl, ok)
-		}
-		for _, s := range spec.Steps {
-			for _, field := range s.Collect {
-				if field.Name == "workBranch" {
-					t.Fatalf("step %s still collects the retired workBranch", s.ID)
-				}
+		for _, field := range []string{"baseBranch", "workBranch", "worktreeMode"} {
+			if _, ok := spec.State[field]; ok {
+				t.Errorf("implementation still declares %s", field)
 			}
-			for _, option := range s.Options {
-				for _, field := range option.Collect {
-					if field.Name == "workBranch" {
-						t.Fatalf("option %s of step %s still collects the retired workBranch", option.Choice, s.ID)
-					}
-				}
+		}
+		for _, step := range []string{"baseTarget", "workTarget", "landing"} {
+			if spec.StepByID[step] != nil {
+				t.Errorf("implementation still has the %s step", step)
 			}
 		}
 		return

@@ -436,28 +436,55 @@ func TestWorkflowSessionBindingDriftProvenanceOnlyForBindingTargets(t *testing.T
 	}
 }
 
-func TestWorkflowWIPRequiresExplicitBaseBranchBeforeCallingApplication(t *testing.T) {
-	workflow := &WorkflowSession{}
-	registry := engine.NewRegistry()
-	if err := workflow.registerWorkflowWIP(registry); err != nil {
-		t.Fatal(err)
-	}
-	tests := []struct {
-		command string
-		values  map[string]any
+// TestWorkflowWIPTargetsTheSessionsCurrentBranch: marker writes go to the
+// session's current branch, resolved to a concrete branch the intent records
+// (20260923-230855-d-cpt-34w).
+func TestWorkflowWIPTargetsTheSessionsCurrentBranch(t *testing.T) {
+	runtime := &ProjectRuntime{options: ProjectRuntimeOptions{
+		Project: ProjectRef{ID: "example"}, DefaultBranch: "main",
+		Graph: workflowTargetGraphStore{snapshot: workflowTargetSnapshot(t, "main-r1", nil)},
+	}}
+	app := &Application{access: workflowTargetAccess{runtime: runtime}}
+	for _, tt := range []struct {
+		binding    string
+		wantBranch string
 	}{
-		{command: "wipStart", values: map[string]any{"anchor": "20260717-120000-s-tac-wrk"}},
-		{command: "wipDone", values: map[string]any{"wipMarker": "20260717-120000-christopher"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
-			command, ok := registry.Command(tt.command)
-			if !ok {
-				t.Fatalf("%s command is not registered", tt.command)
+		{wantBranch: "main"},
+		{binding: "work", wantBranch: "work"},
+	} {
+		t.Run(fmt.Sprintf("binding=%q", tt.binding), func(t *testing.T) {
+			workflow := &WorkflowSession{
+				app: app, project: "example", identity: RequestIdentity{Subject: "christopher"}, ctx: t.Context(),
+				branch: tt.binding,
 			}
-			_, err := command.Prepare(&engine.Context{Store: workflowTargetStore(t, tt.values)})
-			if err == nil || err.Error() != "WIP write requires an explicit baseBranch" {
-				t.Fatalf("%s error = %v", tt.command, err)
+			registry := engine.NewRegistry()
+			if err := workflow.registerWorkflowWIP(registry); err != nil {
+				t.Fatal(err)
+			}
+			for command, values := range map[string]map[string]any{
+				"wipStart": {"anchor": "20260717-120000-s-tac-wrk"},
+				"wipDone":  {"wipMarker": "20260717-120000-christopher"},
+			} {
+				registered, _ := registry.Command(command)
+				store := workflowTargetStore(t, nil)
+				for name, value := range values {
+					if name == "wipMarker" {
+						if err := store.WriteEngine(name, value); err != nil {
+							t.Fatal(err)
+						}
+						continue
+					}
+					if _, err := store.WriteState(map[string]any{name: value}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				recorded, err := registered.Prepare(&engine.Context{Store: store})
+				if err != nil {
+					t.Fatalf("%s: %v", command, err)
+				}
+				if recorded["branch"] != tt.wantBranch || recorded["project"] != "example" {
+					t.Fatalf("%s recorded %v, want branch %q", command, recorded, tt.wantBranch)
+				}
 			}
 		})
 	}
