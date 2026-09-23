@@ -422,7 +422,7 @@ func (w *WorkflowSession) runWorkflowNewEntry(ctx *engine.Context) error {
 	}
 	result, err := w.app.CreateEntry(w.ctx, w.identity, target.Project, w.binding, draft)
 	if err != nil {
-		return fmt.Errorf("newEntry: %w", err)
+		return fmt.Errorf("newEntry: %w", withTargetRemedy(ctx.Intent, err))
 	}
 	w.binding = result.Binding
 	if err := ctx.Store.WriteEngine("entryId", result.EntryID); err != nil {
@@ -433,16 +433,17 @@ func (w *WorkflowSession) runWorkflowNewEntry(ctx *engine.Context) error {
 }
 
 // wipTarget is the WIP marker's authority: the session's current branch,
-// resolved to a concrete branch the intent records (20260923-230855-d-cpt-34w).
-func (w *WorkflowSession) wipTarget(ctx *engine.Context) (MutationTarget, error) {
-	target, _, _, err := w.concreteEffectiveTarget(ctx.Store)
+// resolved to a concrete branch the intent records with its provenance
+// (20260923-230855-d-cpt-34w).
+func (w *WorkflowSession) wipTarget(ctx *engine.Context) (map[string]string, error) {
+	target, source, err := w.concreteEffectiveTarget(ctx.Store)
 	if err != nil {
-		return MutationTarget{}, err
+		return nil, err
 	}
 	if err := w.authorizeTarget(target.Project, AccessWrite); err != nil {
-		return MutationTarget{}, err
+		return nil, err
 	}
-	return target, nil
+	return map[string]string{"project": string(target.Project), "branch": target.Branch, "source": source}, nil
 }
 
 // workflowBranchFields is the application-owned registry of procedure state
@@ -454,9 +455,12 @@ func (w *WorkflowSession) wipTarget(ctx *engine.Context) (MutationTarget, error)
 var workflowBranchFields = [...]string{"captureBranch", "resolvedCaptureBranch"}
 
 // targetSourceBinding names the durable session binding as the branch source
-// in a target provenance; a state field names itself; empty means the
-// project's configured default.
-const targetSourceBinding = "binding"
+// in a target provenance, targetSourceBase the session's derived base; a state
+// field names itself; empty means the branch is not yet resolved.
+const (
+	targetSourceBinding = "binding"
+	targetSourceBase    = "base"
+)
 
 // effectiveTarget is the sole target precedence rule, shared by graph reads
 // and graph writes: the project is the instance's (d-cpt-yjc); the branch is
@@ -495,24 +499,37 @@ func (w *WorkflowSession) effectiveTargetSource(project ProjectID, store *engine
 	return MutationTarget{Project: project}, ""
 }
 
-// concreteEffectiveTarget resolves the configured default without mutating
-// procedure state. The write gate records that default as an engine-owned
-// resolvedCaptureBranch only after CreateEntry reports that an artifact was
-// actually written.
-func (w *WorkflowSession) concreteEffectiveTarget(store *engine.Store) (MutationTarget, bool, bool, error) {
-	target, fromBinding := w.effectiveTarget(store)
+// concreteEffectiveTarget resolves an unbound target to the session's base
+// without mutating procedure state, returning the branch's provenance as
+// effectiveTargetSource names it, or targetSourceBase.
+func (w *WorkflowSession) concreteEffectiveTarget(store *engine.Store) (MutationTarget, string, error) {
+	project := w.projectFor(store)
+	target, source := w.effectiveTargetSource(project, store)
 	if target.Branch != "" {
-		return target, fromBinding, false, nil
+		return target, source, nil
 	}
 	runtime, err := w.targetRuntime(target.Project, AccessRead)
 	if err != nil {
-		return MutationTarget{}, false, false, err
+		return MutationTarget{}, "", err
 	}
-	target, err = runtime.defaultMutationTarget()
+	target, _, err = runtime.baseTarget(w.ctx)
 	if err != nil {
-		return MutationTarget{}, false, false, err
+		return MutationTarget{}, "", err
 	}
-	return target, false, true, nil
+	return target, targetSourceBase, nil
+}
+
+// withTargetRemedy names the remedy when a recorded write's branch cannot be
+// acquired, by the provenance the intent recorded (20260923-233057-d-cpt-ekd).
+func withTargetRemedy(intent *engine.MutationIntent, err error) error {
+	branch := intent.Values["branch"]
+	switch intent.Values["source"] {
+	case targetSourceBinding:
+		return withSessionBindingTargetError(branch, true, err)
+	case targetSourceBase:
+		return withBaseTargetError(branch, err)
+	}
+	return err
 }
 
 func (w *WorkflowSession) withSessionBindingTargetError(err error, fromBinding bool) error {

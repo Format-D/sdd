@@ -11,6 +11,7 @@ pending_operation:
     branch: main
     entryId: 20260921-120000-s-tac-op1
     project: test
+    source: base
 procedure: capture
 project: test
 session: <session-1>

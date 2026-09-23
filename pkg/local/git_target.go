@@ -3,6 +3,7 @@ package local
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -81,6 +82,25 @@ func (a *GitWorktreeAcquirer) AcquireSnapshot(ctx context.Context, q app.Snapsho
 	}
 	return a.readFactory(ctx, checkout, q)
 }
+
+// BaseBranch answers the branch the serving checkout has checked out at the
+// moment of the call — the unbound session's base (20260923-233057-d-cpt-ekd).
+// It is empty when the checkout has none: a detached HEAD, or a directory
+// outside any Git repository.
+func (a *GitWorktreeAcquirer) BaseBranch(ctx context.Context) (string, error) {
+	output, err := a.runGit(ctx, "-C", a.serverCheckout, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && (exit.ExitCode() == 1 || strings.Contains(string(output), "not a git repository")) {
+			return "", nil
+		}
+		return "", fmt.Errorf("sdd: reading the serving checkout's branch: %s (%w)", strings.TrimSpace(string(output)), err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+// Project is the project whose checkouts the acquirer resolves.
+func (a *GitWorktreeAcquirer) Project() app.ProjectID { return a.project }
 
 // ValidateBranch applies the live acquisition rule without opening graph
 // adapters or finalizers.

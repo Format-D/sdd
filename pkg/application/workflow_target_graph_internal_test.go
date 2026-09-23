@@ -261,18 +261,18 @@ func TestWorkflowEffectiveTargetPrecedenceIsSharedByReadsAndWrites(t *testing.T)
 			if read != wantRead {
 				t.Fatalf("read target = %+v, want %+v", read, wantRead)
 			}
-			write, writeFromBinding, resolvedDefault, err := workflow.concreteEffectiveTarget(store)
+			write, source, err := workflow.concreteEffectiveTarget(store)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if write.Branch != tt.wantWrite || write.Project != "example" {
 				t.Fatalf("write target = %+v, want branch %q", write, tt.wantWrite)
 			}
-			if writeFromBinding != fromBinding {
-				t.Fatalf("binding provenance differs: read=%v write=%v", fromBinding, writeFromBinding)
+			if (source == targetSourceBinding) != fromBinding {
+				t.Fatalf("binding provenance differs: read=%v write source=%q", fromBinding, source)
 			}
-			if resolvedDefault != (read.Branch == "") {
-				t.Fatalf("resolvedDefault = %v for read target %+v", resolvedDefault, read)
+			if (source == targetSourceBase) != (read.Branch == "") {
+				t.Fatalf("write source = %q for read target %+v", source, read)
 			}
 			if read.Branch != "" && read != write {
 				t.Fatalf("read target %+v and write target %+v disagree", read, write)

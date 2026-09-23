@@ -26,7 +26,7 @@ func (a *Application) readDocument(ctx context.Context, identity RequestIdentity
 	if err != nil {
 		return DocumentPublication{}, err
 	}
-	target, err = resolveMutationTarget(runtime, target)
+	target, err = resolveMutationTarget(ctx, runtime, target)
 	if err != nil {
 		return DocumentPublication{}, err
 	}
@@ -49,7 +49,7 @@ func (a *Application) lookupDocumentPublication(ctx context.Context, identity Re
 	if err != nil {
 		return DocumentPublication{}, false, err
 	}
-	target, err = resolveMutationTarget(runtime, target)
+	target, err = resolveMutationTarget(ctx, runtime, target)
 	if err != nil {
 		return DocumentPublication{}, false, err
 	}
@@ -92,7 +92,7 @@ func (a *Application) PublishDocument(ctx context.Context, identity RequestIdent
 	if write.Mutation.LogicalPath == "" || write.Mutation.LogicalPath != filepath.ToSlash(write.Mutation.LogicalPath) || strings.HasPrefix(write.Mutation.LogicalPath, "/") || strings.Contains(write.Mutation.LogicalPath, "..") {
 		return DocumentPublication{}, fmt.Errorf("invalid document path %q", write.Mutation.LogicalPath)
 	}
-	target, err := resolveMutationTarget(runtime, write.Target)
+	target, err := resolveMutationTarget(ctx, runtime, write.Target)
 	if err != nil {
 		return DocumentPublication{}, err
 	}

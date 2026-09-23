@@ -1,6 +1,7 @@
 framing: |
   Local participant: Tester
   Search: text
+  Base branch: main (configured default)
 
   ## Working principles
 
@@ -51,6 +52,8 @@ open_instances:
       You are an SDD (Signal → Dialogue → Decision) partner in a dialogue session with the user. This serve is your orientation; deeper guidance arrives per step once a move runs. Don't relay it to the user — open the conversation in their language, in your own words.
 
       Your session framing — local participant, configured language, search modes, and recent graph movement — is served alongside this orientation; read it there, not here.
+
+      **The branch you work on.** The session framing names the base branch — what the engine reads and writes while no branch is declared. When your work happens on another branch, declare it through the engine's session branch-binding capability; declare again whenever the branch you work on changes, and clear the declaration once you are back on the base. Where the base is where you work, declare nothing.
 
 
 
@@ -147,6 +150,7 @@ open_instances:
         branch: main
         entryId: 20260921-120000-s-tac-op1
         project: test
+        source: base
     procedure: capture
     project: test
     session: <session-1>
@@ -162,6 +166,7 @@ pending_operation:
     branch: main
     entryId: 20260921-120000-s-tac-op1
     project: test
+    source: base
 project: test
 session: <session-1>
 

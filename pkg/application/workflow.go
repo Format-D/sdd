@@ -914,6 +914,11 @@ func (w *WorkflowSession) Framing(ctx context.Context, identity RequestIdentity)
 		fmt.Fprintf(&infoBlock, "Language: %s\n", info.Language)
 	}
 	fmt.Fprintf(&infoBlock, "Search: %s", info.Search)
+	base, err := w.baseLine()
+	if err != nil {
+		return nil, err
+	}
+	infoBlock.WriteString(base)
 	if w.branch != "" {
 		fmt.Fprintf(&infoBlock, "\nBranch binding: %s", w.branch)
 	}
@@ -930,6 +935,31 @@ func (w *WorkflowSession) Framing(ctx context.Context, identity RequestIdentity)
 		blocks = append(blocks, health)
 	}
 	return blocks, nil
+}
+
+// baseLine names the session's base branch and where it came from, re-derived
+// on every framing so a changed base re-serves (20260923-233057-d-cpt-ekd).
+// A base without a checkout says so, since every unbound write to it fails.
+func (w *WorkflowSession) baseLine() (string, error) {
+	runtime, err := w.targetRuntime(w.project, AccessRead)
+	if err != nil {
+		return "", err
+	}
+	if runtime.options.Base == nil && strings.TrimSpace(runtime.options.DefaultBranch) == "" {
+		// A read-only composition has no branch to name.
+		return "", nil
+	}
+	target, source, err := runtime.baseTarget(w.ctx)
+	if err != nil {
+		return "", err
+	}
+	line := fmt.Sprintf("\nBase branch: %s (%s)", target.Branch, source)
+	if source != BaseFromCheckout && runtime.options.Branches != nil {
+		if err := runtime.options.Branches.ValidateBranch(w.ctx, target); err != nil {
+			line += fmt.Sprintf("\nNo checkout has the base branch %s: declare the branch you work on before writing.", target.Branch)
+		}
+	}
+	return line, nil
 }
 
 // graphHealthBlock renders a compact framing notice of graph-integrity
@@ -1205,14 +1235,16 @@ func (w *WorkflowSession) loadProcedure(canonical string) (*engine.Spec, error) 
 	if err != nil && w.branch != "" {
 		// A stale binding must not lock the session out: replay resolves the
 		// procedures the session ran, and clearing or re-declaring the binding
-		// needs that replay (20260914-180822-d-cpt-9kv). When the bound branch
-		// has no checkout, the specs resolve from the project's configured
-		// default branch — the concrete authority ordinary captures fall back
-		// to, never the ambient current graph; replay's entry-identity check
-		// still refuses a procedure that changed underneath the session.
+		// needs that replay. When the bound branch has no checkout, the specs
+		// resolve from the session's base, what it reads once the binding is
+		// cleared; replay's entry-identity check still refuses a procedure
+		// that changed underneath the session.
 		var acquisition *targetAcquisitionError
 		if errors.As(err, &acquisition) && acquisition.target.Branch == w.branch {
-			graph, err = w.defaultBranchGraph()
+			var view *materializedGraphView
+			if view, err = w.graphs.targetView(MutationTarget{Project: w.project}, false); err == nil {
+				graph = view.snapshot.graph
+			}
 		}
 	}
 	if err != nil {
@@ -1223,25 +1255,6 @@ func (w *WorkflowSession) loadProcedure(canonical string) (*engine.Spec, error) 
 		return nil, fmt.Errorf("no procedure %q", canonical)
 	}
 	return engine.LoadSpec(entry, w.engine.Registry)
-}
-
-// defaultBranchGraph reads the home project's graph on its configured default
-// branch, the fallback for resolving procedure specs when the session's bound
-// branch has no checkout.
-func (w *WorkflowSession) defaultBranchGraph() (*model.Graph, error) {
-	runtime, err := w.targetRuntime(w.project, AccessRead)
-	if err != nil {
-		return nil, err
-	}
-	target, err := runtime.defaultMutationTarget()
-	if err != nil {
-		return nil, err
-	}
-	view, err := w.graphs.targetView(target, false)
-	if err != nil {
-		return nil, err
-	}
-	return view.snapshot.graph, nil
 }
 
 func (w *WorkflowSession) pendingOperation() *WorkflowPendingOperation {

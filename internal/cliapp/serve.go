@@ -307,7 +307,7 @@ func buildLocalApplication(ctx context.Context, cmd *cli.Command, graphDir, sddD
 	}
 	runtime, err := sdd.NewProjectRuntime(sdd.ProjectRuntimeOptions{
 		Project: sdd.ProjectRef{ID: project, DisplayName: displayName}, DefaultBranch: cfg.DefaultBranch, Language: language,
-		Dependencies: dependencies, Graph: localBranchReadStore{GraphStore: graph, branches: targets}, Targets: targets, Branches: targets,
+		Dependencies: dependencies, Graph: localadapter.BranchReadStore{GraphStore: graph, Branches: targets, DefaultBranch: cfg.DefaultBranch}, Targets: targets, Branches: targets, Base: targets,
 		Embedder: embeddings, SearchIndex: optionalSearchIndex(embeddings, baseIndex),
 		LLM: runner,
 	})
@@ -410,18 +410,6 @@ func collectSessions(ctx context.Context, application *sdd.Application, retentio
 			"skipped", len(total.Skipped),
 		)
 	}
-}
-
-type localBranchReadStore struct {
-	sdd.GraphStore
-	branches sdd.SnapshotReader
-}
-
-func (s localBranchReadStore) AcquireSnapshot(ctx context.Context, q sdd.SnapshotReadQuery) (*sdd.AcquiredSnapshot, error) {
-	if q.Branch != "" {
-		return s.branches.AcquireSnapshot(ctx, q)
-	}
-	return s.GraphStore.(sdd.SnapshotReader).AcquireSnapshot(ctx, q)
 }
 
 func optionalSearchIndex(embeddings embed.Embedder, index sdd.SearchIndexStore) sdd.SearchIndexStore {

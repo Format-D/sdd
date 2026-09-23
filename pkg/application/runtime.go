@@ -24,6 +24,9 @@ type ProjectRuntimeOptions struct {
 	Graph         GraphStore
 	Targets       TargetAcquirer
 	Branches      BranchValidator
+	// Base derives an unbound session's base branch; nil means the
+	// configured default.
+	Base BaseBranchResolver
 	// Embedder and LLM are the two model dependencies, each a pkg/llm port
 	// injected as an instance that arrives already composed — observed,
 	// bounded, and rate-limited by the host's decorators. Routing, deadlines,
@@ -77,6 +80,28 @@ func (r *ProjectRuntime) defaultMutationTarget() (MutationTarget, error) {
 		return MutationTarget{}, fmt.Errorf("sdd: project %s has no concrete default mutation branch configured: %w", r.options.Project.ID, err)
 	}
 	return target, nil
+}
+
+// baseTarget resolves the target an unbound write goes to: the branch the
+// composition derives, else the configured default.
+func (r *ProjectRuntime) baseTarget(ctx context.Context) (MutationTarget, BaseSource, error) {
+	if r.options.Base == nil {
+		target, err := r.defaultMutationTarget()
+		return target, BaseFromDefault, err
+	}
+	branch, err := r.options.Base.BaseBranch(ctx)
+	if err != nil {
+		return MutationTarget{}, "", fmt.Errorf("sdd: deriving the base branch of project %s: %w", r.options.Project.ID, err)
+	}
+	if branch == "" {
+		target, err := r.defaultMutationTarget()
+		return target, BaseWithoutBranch, err
+	}
+	target := MutationTarget{Project: r.options.Project.ID, Branch: branch}
+	if err := target.Validate(r.options.Project.ID); err != nil {
+		return MutationTarget{}, "", err
+	}
+	return target, BaseFromCheckout, nil
 }
 
 func (r *ProjectRuntime) acquire(ctx context.Context, target MutationTarget) (*AcquiredTarget, error) {

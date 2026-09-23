@@ -21,7 +21,7 @@ func (a *Application) PreflightEntry(ctx context.Context, identity RequestIdenti
 	if err != nil {
 		return PreflightEntryResult{}, err
 	}
-	draft.Target, err = resolveMutationTarget(runtime, draft.Target)
+	draft.Target, err = resolveMutationTarget(ctx, runtime, draft.Target)
 	if err != nil {
 		return PreflightEntryResult{}, err
 	}
@@ -66,7 +66,7 @@ func (a *Application) entryPublicationExists(ctx context.Context, identity Reque
 	if err != nil {
 		return false, err
 	}
-	target, err = resolveMutationTarget(runtime, target)
+	target, err = resolveMutationTarget(ctx, runtime, target)
 	if err != nil {
 		return false, err
 	}
@@ -112,7 +112,7 @@ func (a *Application) CreateEntry(ctx context.Context, identity RequestIdentity,
 	if _, err := model.IDToRelPath(draft.EntryID); err != nil {
 		return result, fmt.Errorf("recorded entry ID: %w", err)
 	}
-	draft.Target, err = resolveMutationTarget(runtime, draft.Target)
+	draft.Target, err = resolveMutationTarget(ctx, runtime, draft.Target)
 	if err != nil {
 		return result, err
 	}

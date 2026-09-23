@@ -147,9 +147,9 @@ func (a *Application) OpenStagedBlob(ctx context.Context, identity RequestIdenti
 }
 
 // resolveMutationTarget completes a target against the runtime it is written
-// through: an empty branch means the runtime's configured default, and a named
-// project must be the runtime's own.
-func resolveMutationTarget(runtime *ProjectRuntime, requested MutationTarget) (MutationTarget, error) {
+// through: an empty branch means the runtime's base, and a named project must
+// be the runtime's own.
+func resolveMutationTarget(ctx context.Context, runtime *ProjectRuntime, requested MutationTarget) (MutationTarget, error) {
 	if requested.Project == "" {
 		requested.Project = runtime.options.Project.ID
 	}
@@ -157,7 +157,8 @@ func resolveMutationTarget(runtime *ProjectRuntime, requested MutationTarget) (M
 		if requested.Project != runtime.options.Project.ID {
 			return MutationTarget{}, &ApplicationError{Code: ErrorWriteDenied, Message: "mutation target project must equal the session project"}
 		}
-		return runtime.defaultMutationTarget()
+		target, _, err := runtime.baseTarget(ctx)
+		return target, err
 	}
 	if err := requested.Validate(runtime.options.Project.ID); err != nil {
 		return MutationTarget{}, err

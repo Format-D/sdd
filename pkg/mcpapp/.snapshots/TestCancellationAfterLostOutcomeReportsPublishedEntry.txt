@@ -13,6 +13,7 @@ cancellation:
     branch: main
     entryId: 20260921-120000-s-tac-op1
     project: test
+    source: base
 goal: put the choice to the user and relay their answer verbatim
 instance: i_2
 instructions: |
