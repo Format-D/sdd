@@ -65,13 +65,13 @@ func replayAgainst(t *testing.T, spec *engine.Spec, events []engine.Event) *engi
 
 // TestReplay_ReadsTheLogAsHistory: a session recorded against an earlier
 // revision of its procedure replays against the current one — the retired
-// field's report is dropped and the retired step is passed through
-// (20260923-230855-d-cpt-34w).
+// field's start seed and report are dropped and the retired step is passed
+// through (20260923-230855-d-cpt-34w).
 func TestReplay_ReadsTheLogAsHistory(t *testing.T) {
 	ran := historySpec(t, historyMachineRan)
 	sink := &recordingSink{}
 	session := engine.New(engine.NewRegistry(), engine.StaticGraphs{Graph: model.NewGraph(nil)}).NewSession("s_history", "tester", sink)
-	sv, err := session.Start(ran, nil, "")
+	sv, err := session.Start(ran, map[string]any{"retired": "seeded"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

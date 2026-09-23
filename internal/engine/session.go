@@ -839,7 +839,7 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 			Parent: parent,
 		}
 		if params, ok := ev.Data["params"].(map[string]any); ok {
-			if err := inst.Store.SetStart(params); err != nil {
+			if err := inst.Store.SetStart(declaredInputs(spec, params)); err != nil {
 				return err
 			}
 		} else if err := inst.Store.SetStart(nil); err != nil {
@@ -1020,6 +1020,18 @@ func declaredState(spec *Spec, fields map[string]any) map[string]any {
 	kept := make(map[string]any, len(fields))
 	for name, value := range fields {
 		if _, ok := spec.State[name]; ok {
+			kept[name] = value
+		}
+	}
+	return kept
+}
+
+// declaredInputs drops logged start inputs the procedure no longer declares
+// as a param or as seedable state.
+func declaredInputs(spec *Spec, inputs map[string]any) map[string]any {
+	kept := declaredState(spec, inputs)
+	for name, value := range inputs {
+		if _, ok := spec.Params[name]; ok {
 			kept[name] = value
 		}
 	}
