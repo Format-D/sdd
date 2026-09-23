@@ -159,6 +159,15 @@ func RunGraphStoreTests(t *testing.T, factory func(*testing.T) GraphStoreFixture
 	} else if found && !bytes.Equal(looked.Content, fixture.DocumentContent) {
 		t.Fatalf("LookupDocumentPublication = %+v, want the created content", looked)
 	}
+	other := create
+	other.Sequence++
+	existing, err := publisher.PublishDocument(ctx, other, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Content: fixture.DocumentReplacement, Message: "create over"})
+	if err != nil || !bytes.Equal(existing.Content, fixture.DocumentContent) || existing.Absent {
+		t.Fatalf("PublishDocument create over a present document = %+v, %v; want the present document", existing, err)
+	}
+	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentContent) {
+		t.Fatalf("a creation over a present document must leave it: %+v, %v", current, err)
+	}
 	_, err = publisher.PublishDocument(ctx, replace, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Content: fixture.DocumentReplacement, ExpectedBlob: sdd.GitBlobID([]byte("something else")), Message: "replace"})
 	var appErr *sdd.ApplicationError
 	if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorGraphConflict {
@@ -174,15 +183,8 @@ func RunGraphStoreTests(t *testing.T, factory func(*testing.T) GraphStoreFixture
 	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentReplacement) {
 		t.Fatalf("ReadDocument after replace = %+v, %v", current, err)
 	}
-	_, err = publisher.PublishDocument(ctx, remove, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, ExpectedBlob: sdd.GitBlobID(fixture.DocumentContent), Message: "remove"})
-	if !errors.As(err, &appErr) || appErr.Code != sdd.ErrorGraphConflict {
-		t.Fatalf("PublishDocument remove against the replaced blob = %v, want %s", err, sdd.ErrorGraphConflict)
-	}
-	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !bytes.Equal(current.Content, fixture.DocumentReplacement) {
-		t.Fatalf("a refused removal must leave the document: %+v, %v", current, err)
-	}
-	removed, err := publisher.PublishDocument(ctx, remove, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, ExpectedBlob: sdd.GitBlobID(fixture.DocumentReplacement), Message: "remove"})
-	if err != nil || !removed.Absent {
+	removed, err := publisher.PublishDocument(ctx, remove, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Message: "remove"})
+	if err != nil || !removed.Absent || removed.Revision == "" {
 		t.Fatalf("PublishDocument remove = %+v, %v; want absent", removed, err)
 	}
 	if current, err := publisher.ReadDocument(ctx, fixture.DocumentPath); err != nil || !current.Absent {
@@ -190,8 +192,8 @@ func RunGraphStoreTests(t *testing.T, factory func(*testing.T) GraphStoreFixture
 	}
 	absentKey := remove
 	absentKey.Sequence++
-	if again, err := publisher.PublishDocument(ctx, absentKey, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Message: "remove again"}); err != nil || !again.Absent {
-		t.Fatalf("removing an absent document = %+v, %v; want absent without error", again, err)
+	if again, err := publisher.PublishDocument(ctx, absentKey, sdd.DocumentMutation{LogicalPath: fixture.DocumentPath, Message: "remove again"}); err != nil || !again.Absent || again.Revision != "" {
+		t.Fatalf("removing an absent document = %+v, %v; want absent with nothing to complete", again, err)
 	}
 }
 

@@ -49,7 +49,9 @@ type EntryPublication struct {
 
 // DocumentPublication is what one keyed write left for a logical path: the
 // revision carrying it and the document's bytes there, or its absence when the
-// write removed the document or found nothing to remove.
+// write removed the document or found nothing to remove. An empty Revision
+// says the write changed nothing that still needs completing: the document
+// was already present as asked, or already absent.
 type DocumentPublication struct {
 	Revision string
 	Content  []byte
@@ -57,16 +59,19 @@ type DocumentPublication struct {
 }
 
 // DocumentMutation is one keyed write of a single graph document without
-// attachments: a creation, a replacement conditioned on the document it
-// replaces, or a removal. The store publishes it once under its key.
+// attachments. Content with no ExpectedBlob creates the document if it is
+// absent and otherwise leaves the existing document as it is; Content with an
+// ExpectedBlob replaces the document that blob identifies; nil Content removes
+// the document if it is present. Creation and removal are the WIP marker
+// writes: a marker's path is unique to its run, so its existence is its whole
+// state and no precondition applies (d-tac-lqh).
 type DocumentMutation struct {
 	LogicalPath string
 	// Content is the complete document after the write; nil removes it.
 	Content []byte
-	// ExpectedBlob is the Git blob ID of the document a replacement replaces or
-	// a removal removes (GitBlobID); a mismatch is an ErrorGraphConflict, never a
-	// retryable condition (d-tac-wgw). Empty for a creation, or for a removal
-	// that only asks the path to be gone.
+	// ExpectedBlob is the Git blob ID of the document a replacement replaces
+	// (GitBlobID); a mismatch is an ErrorGraphConflict, never a retryable
+	// condition (d-tac-wgw). Empty for a creation or a removal.
 	ExpectedBlob string
 	Message      string
 }
@@ -76,8 +81,8 @@ type DocumentMutation struct {
 // publication; a lookup failure is never treated as absence. PublishEntry
 // accepts one entry and its staged attachments; PublishDocument one entry-less
 // document change: a WIP marker created or removed, a summary replaced. A
-// removal of an absent document succeeds without a publication. Required
-// storage commits precede success.
+// creation over a present document and a removal of an absent one succeed
+// with nothing published. Required storage commits precede success.
 type PublicationStore interface {
 	LookupEntryPublication(context.Context, PublicationKey, string) (EntryPublication, bool, error)
 	PublishEntry(context.Context, PublicationKey, MutationBatch, StagedBlobReader) (EntryPublication, error)

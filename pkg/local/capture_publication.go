@@ -117,6 +117,17 @@ func (s *FilesystemGraphStore) PublishEntry(ctx context.Context, key app.Publica
 	return publication, nil
 }
 
+// committedOnBranch reports whether the publication branch carries the path.
+// Without Git nothing is known to be complete, so a present document is
+// handed to the finalizers again; they are idempotent.
+func (s *FilesystemGraphStore) committedOnBranch(ctx context.Context, logicalPath string) (bool, error) {
+	if s.publicationGit == nil {
+		return false, nil
+	}
+	_, committed, err := s.publicationGit.readCommittedFile(ctx, s.publicationGit.Branch, logicalPath)
+	return committed, err
+}
+
 // recordLineage remembers which revision a publication advanced from.
 func (s *FilesystemGraphStore) recordLineage(before, after string) {
 	if before == "" || after == "" || before == after {
@@ -298,10 +309,12 @@ func (s *FilesystemGraphStore) lookupDocumentPublicationLocked(ctx context.Conte
 	return app.DocumentPublication{Revision: revision, Content: content, Absent: !exists}, true, nil
 }
 
-// PublishDocument writes one document change once under its key. A
-// replacement checks the document it replaces by blob ID; a removal of an
-// absent document succeeds with nothing to commit. On a Git-backed target the
-// publication counts as existing only after its finalizer committed it.
+// PublishDocument writes one document change once under its key. A creation
+// over a present document and a removal of an absent one change nothing; a
+// replacement checks the document it replaces by blob ID. On a Git-backed
+// target the publication counts as existing only after its finalizer
+// committed it, so a file written or removed by an attempt whose commit was
+// lost is handed to the finalizer again.
 func (s *FilesystemGraphStore) PublishDocument(ctx context.Context, key app.PublicationKey, mutation app.DocumentMutation) (_ app.DocumentPublication, err error) {
 	if err := key.Validate(); err != nil {
 		return app.DocumentPublication{}, err
@@ -329,21 +342,15 @@ func (s *FilesystemGraphStore) PublishDocument(ctx context.Context, key app.Publ
 	switch {
 	case mutation.Content == nil:
 		if current.Absent {
-			if s.publicationGit != nil {
-				// Removed before a lost commit: the branch still carries the file,
-				// so the finalizer has a removal to commit.
-				_, committed, err := s.publicationGit.readCommittedFile(ctx, s.publicationGit.Branch, mutation.LogicalPath)
-				if err != nil {
-					return app.DocumentPublication{}, err
-				}
-				if committed {
-					break
-				}
+			committed, err := s.committedOnBranch(ctx, mutation.LogicalPath)
+			if err != nil {
+				return app.DocumentPublication{}, err
+			}
+			if committed {
+				// Removed before a lost commit: the finalizer has a removal to commit.
+				break
 			}
 			return app.DocumentPublication{Absent: true}, nil
-		}
-		if mutation.ExpectedBlob != "" && app.GitBlobID(current.Content) != mutation.ExpectedBlob {
-			return app.DocumentPublication{}, &app.ApplicationError{Code: app.ErrorGraphConflict, Message: "the document changed since it was read", Revision: current.Revision}
 		}
 		root, openErr := os.OpenRoot(s.dir)
 		if openErr != nil {
@@ -356,12 +363,21 @@ func (s *FilesystemGraphStore) PublishDocument(ctx context.Context, key app.Publ
 		if err := syncDirectory(filepath.Join(s.dir, filepath.FromSlash(path.Dir(mutation.LogicalPath)))); err != nil {
 			return app.DocumentPublication{}, err
 		}
+	case mutation.ExpectedBlob == "" && !current.Absent:
+		// Create-if-absent: the document is present; a file whose commit was
+		// lost still goes to the finalizer, anything else changes nothing.
+		committed, err := s.committedOnBranch(ctx, mutation.LogicalPath)
+		if err != nil {
+			return app.DocumentPublication{}, err
+		}
+		if committed {
+			return app.DocumentPublication{Content: current.Content}, nil
+		}
+		return app.DocumentPublication{Revision: current.Revision, Content: current.Content}, nil
 	case !current.Absent && bytes.Equal(current.Content, mutation.Content):
 		// Written before a lost commit; the finalizer completes it.
 	case mutation.ExpectedBlob != "" && (current.Absent || app.GitBlobID(current.Content) != mutation.ExpectedBlob):
 		return app.DocumentPublication{}, &app.ApplicationError{Code: app.ErrorGraphConflict, Message: "the document changed since it was read", Revision: current.Revision}
-	case mutation.ExpectedBlob == "" && !current.Absent:
-		return app.DocumentPublication{}, &app.ApplicationError{Code: app.ErrorGraphConflict, Message: "the document already exists with other content", Revision: current.Revision}
 	default:
 		root, openErr := os.OpenRoot(s.dir)
 		if openErr != nil {

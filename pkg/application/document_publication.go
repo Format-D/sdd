@@ -13,8 +13,7 @@ import (
 
 // DocumentWrite is one entry-less graph write under the session's recorded
 // intent: a summary replacement, a WIP marker created or removed. The key is
-// the intent's publication identity; the store publishes the mutation once
-// under it, and a retry that finds the publication returns it (d-tac-n47).
+// the intent's publication identity, recorded with the write (d-tac-n47).
 type DocumentWrite struct {
 	Target      MutationTarget
 	Publication PublicationKey
@@ -67,8 +66,8 @@ func (a *Application) lookupDocumentPublication(ctx context.Context, identity Re
 }
 
 // PublishDocument publishes one document write under its recorded key and runs
-// the target's finalizers on what it changed. A key that already published
-// returns that publication; a removal of an absent document publishes nothing.
+// the target's finalizers on what it changed. A write that changed nothing, a
+// marker already present or already absent, completes without them.
 func (a *Application) PublishDocument(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, write DocumentWrite) (_ DocumentPublication, err error) {
 	principal, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
 	if err != nil {
@@ -109,19 +108,12 @@ func (a *Application) PublishDocument(ctx context.Context, identity RequestIdent
 	if err != nil {
 		return DocumentPublication{}, err
 	}
-	publication, exists, err := publisher.LookupDocumentPublication(ctx, write.Publication, write.Mutation.LogicalPath)
+	publication, err := publisher.PublishDocument(ctx, write.Publication, write.Mutation)
 	if err != nil {
 		return DocumentPublication{}, err
 	}
-	if !exists {
-		publication, err = publisher.PublishDocument(ctx, write.Publication, write.Mutation)
-		if err != nil {
-			return DocumentPublication{}, err
-		}
-		if write.Mutation.Content == nil && publication.Absent && publication.Revision == "" {
-			// Removing what was already absent left nothing to commit.
-			return publication, nil
-		}
+	if publication.Revision == "" {
+		return publication, nil
 	}
 	batch := MutationBatch{
 		ID:      write.Publication.String(),
@@ -207,8 +199,8 @@ type WIPMarkerWrite struct {
 }
 
 // StartWIP publishes an exclusive WIP marker for the entry on the target. The
-// marker's identity was allocated before the intent, so a retry publishes the
-// same marker once.
+// marker's identity was allocated before the intent and its path is unique to
+// the run, so a retry that finds the marker present publishes nothing.
 func (a *Application) StartWIP(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, write WIPMarkerWrite) (DocumentPublication, error) {
 	principal, runtime, err := a.resolve(ctx, identity, project, AccessWrite)
 	if err != nil {
@@ -231,29 +223,16 @@ func (a *Application) StartWIP(ctx context.Context, identity RequestIdentity, pr
 	})
 }
 
-// FinishWIP removes the named WIP marker from the target, conditioned on the
-// marker as it was read, so a marker recreated meanwhile under the same path
-// stays. Removing a marker that is already absent succeeds and never removes
-// another one.
+// FinishWIP removes the named WIP marker from the target. Removing a marker
+// that is already absent succeeds and never removes another one.
 func (a *Application) FinishWIP(ctx context.Context, identity RequestIdentity, project ProjectID, binding SessionBinding, target MutationTarget, key PublicationKey, markerID string) (DocumentPublication, error) {
-	logicalPath := filepath.ToSlash(model.WIPMarkerPath(markerID))
 	if target.Project == "" {
 		target.Project = project
 	}
-	if published, exists, err := a.lookupDocumentPublication(ctx, identity, target, key, logicalPath); err != nil {
-		return DocumentPublication{}, err
-	} else if exists {
-		return published, nil
-	}
-	current, err := a.readDocument(ctx, identity, target, logicalPath)
-	if err != nil {
-		return DocumentPublication{}, err
-	}
-	mutation := DocumentMutation{LogicalPath: logicalPath, Message: "sdd: wip done " + markerID}
-	if !current.Absent {
-		mutation.ExpectedBlob = GitBlobID(current.Content)
-	}
-	return a.PublishDocument(ctx, identity, project, binding, DocumentWrite{Target: target, Publication: key, Mutation: mutation})
+	return a.PublishDocument(ctx, identity, project, binding, DocumentWrite{
+		Target: target, Publication: key,
+		Mutation: DocumentMutation{LogicalPath: filepath.ToSlash(model.WIPMarkerPath(markerID)), Message: "sdd: wip done " + markerID},
+	})
 }
 
 // WIPMarkerID allocates the identity of a marker the resolved principal starts.
