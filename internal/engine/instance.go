@@ -58,6 +58,17 @@ type Instance struct {
 	// only, deliberately: a process restart or resume forgets it, so those
 	// paths serve whole (20260826-120330-d-tac-8f8).
 	draftServed map[string]map[string]string
+	// retiredStep is the logged position when the log placed the instance on
+	// a step its procedure no longer has (see ReplaySession).
+	retiredStep string
+}
+
+// loggedStep is the instance's position as its log records it.
+func (i *Instance) loggedStep() string {
+	if i.retiredStep != "" {
+		return i.retiredStep
+	}
+	return i.Step
 }
 
 // currentStep returns the instance's step definition, nil when terminal.
@@ -430,6 +441,7 @@ func (s *Session) transitionTo(inst *Instance, to string, reopen bool) error {
 		}
 		inst.Step = to
 		inst.opDone = false
+		inst.retiredStep = ""
 	}
 	return nil
 }

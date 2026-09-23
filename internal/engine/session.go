@@ -780,6 +780,12 @@ type SpecResolver func(canonical string) (*Spec, error)
 // applied directly from the logged values — reports, op results, and
 // transitions — never by re-running commands, so replay is free of side
 // effects. The returned session continues appending to sink.
+//
+// The log is history (20260923-230855-d-cpt-34w): a session recorded against
+// an earlier revision of its procedure replays with the fields the procedure
+// no longer declares dropped, and a transition to a step it no longer has
+// leaves the instance on its last known step until a later transition moves
+// it on.
 func (e *Engine) ReplaySession(id, participant string, events []Event, resolve SpecResolver, sink EventSink, opts ...SessionOption) (*Session, error) {
 	s := e.NewSession(id, participant, nil, opts...)
 	for _, ev := range events {
@@ -843,7 +849,7 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		// the started event, re-applied here so a resumed child keeps the
 		// record its gate passed on (no re-widen after a restart).
 		if seed, ok := ev.Data["seed"].(map[string]any); ok {
-			if _, err := inst.Store.WriteState(seed); err != nil {
+			if _, err := inst.Store.WriteState(declaredState(spec, seed)); err != nil {
 				return err
 			}
 		}
@@ -859,12 +865,12 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 			return err
 		}
 		fields, _ := ev.Data["fields"].(map[string]any)
-		if _, err := inst.Store.WriteState(fields); err != nil {
+		if _, err := inst.Store.WriteState(declaredState(inst.Spec, fields)); err != nil {
 			return err
 		}
 		s.clearCancellation(inst.ID)
-		if inst.currentStep().Op == "" {
-			inst.interactionStep = inst.Step
+		if inst.retiredStep != "" || inst.currentStep().Op == "" {
+			inst.interactionStep = inst.loggedStep()
 		}
 
 	case EventChooserAnswer:
@@ -873,11 +879,11 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 			return err
 		}
 		s.clearCancellation(inst.ID)
-		inst.interactionStep = inst.Step
+		inst.interactionStep = inst.loggedStep()
 		// The answer's own effects were logged separately (op_result,
 		// transition); collected fields ride the answer event.
 		if fields, ok := ev.Data["fields"].(map[string]any); ok {
-			if _, err := inst.Store.WriteState(fields); err != nil {
+			if _, err := inst.Store.WriteState(declaredState(inst.Spec, fields)); err != nil {
 				return err
 			}
 		}
@@ -948,8 +954,10 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		case inst.Spec.StepByID[to] != nil:
 			inst.Step = to
 			inst.opDone = false
+			inst.retiredStep = ""
 		default:
-			return fmt.Errorf("transition target %q not in procedure %s", to, inst.Spec.Canonical)
+			inst.retiredStep = to
+			inst.opDone = false
 		}
 
 	case EventCompleted:
@@ -1005,6 +1013,17 @@ func (s *Session) applyEvent(ev Event, resolve SpecResolver) error {
 		return fmt.Errorf("unknown event type %q", ev.Event)
 	}
 	return nil
+}
+
+// declaredState drops logged fields the procedure no longer declares.
+func declaredState(spec *Spec, fields map[string]any) map[string]any {
+	kept := make(map[string]any, len(fields))
+	for name, value := range fields {
+		if _, ok := spec.State[name]; ok {
+			kept[name] = value
+		}
+	}
+	return kept
 }
 
 func (s *Session) replayInstance(ev Event) (*Instance, error) {
