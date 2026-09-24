@@ -385,7 +385,7 @@ def main():
     setup.add_argument("--summary", default="Add a farewell function to the greeting module.")
     setup.add_argument("--task", default=(
         "Add a `farewell(name)` function to `greeting.py` that returns `Goodbye, <name>!`, "
-        "with a unit test in `test_greeting.py`. Done when `python3 -m unittest` passes."))
+        "with a unit test in `test_greeting.py`."))
     setup.set_defaults(func=cmd_setup)
 
     start = commands.add_parser("start")
