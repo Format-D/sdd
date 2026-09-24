@@ -99,15 +99,16 @@ func (w *WorkflowSession) prepareWorkflowWIPStart(ctx *engine.Context) (map[stri
 	if !ok {
 		return nil, fmt.Errorf("wipStart: anchor is not set")
 	}
-	target, err := w.wipTarget(ctx)
+	values, err := w.wipTarget(ctx)
 	if err != nil {
 		return nil, err
 	}
-	marker, err := w.app.WIPMarkerID(w.ctx, w.identity, target.Project)
+	marker, err := w.app.WIPMarkerID(w.ctx, w.identity, ProjectID(values["project"]))
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"markerId": marker, "anchor": anchor, "project": string(target.Project), "branch": target.Branch}, nil
+	values["markerId"], values["anchor"] = marker, anchor
+	return values, nil
 }
 
 func (w *WorkflowSession) runWorkflowWIPStart(ctx *engine.Context) error {
@@ -119,7 +120,7 @@ func (w *WorkflowSession) runWorkflowWIPStart(ctx *engine.Context) error {
 		MarkerID: marker, EntryID: intent.Values["anchor"], Description: description,
 	})
 	if err != nil {
-		return err
+		return withTargetRemedy(intent, err)
 	}
 	return ctx.Store.WriteEngine("wipMarker", marker)
 }
@@ -130,11 +131,12 @@ func (w *WorkflowSession) prepareWorkflowWIPDone(ctx *engine.Context) (map[strin
 	if !ok {
 		return nil, fmt.Errorf("wipDone: wipMarker is not set")
 	}
-	target, err := w.wipTarget(ctx)
+	values, err := w.wipTarget(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"markerId": marker, "project": string(target.Project), "branch": target.Branch}, nil
+	values["markerId"] = marker
+	return values, nil
 }
 
 func (w *WorkflowSession) runWorkflowWIPDone(ctx *engine.Context) error {
@@ -166,7 +168,7 @@ func (w *WorkflowSession) removeWIPMarker(ctx *engine.Context) error {
 	intent := ctx.Intent
 	marker := intent.Values["markerId"]
 	_, err := w.app.FinishWIP(w.ctx, w.identity, w.instanceProject(ctx.Instance), w.binding, intentTarget(intent), w.documentPublicationKey(intent, marker), marker)
-	return err
+	return withTargetRemedy(intent, err)
 }
 
 // reportWorkflowWIPEffects reports the marker as present or absent on the

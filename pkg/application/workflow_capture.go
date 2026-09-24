@@ -38,6 +38,9 @@ func (w *WorkflowSession) runWorkflowPreflight(ctx *engine.Context) error {
 	}
 	result, err := w.app.PreflightEntry(w.ctx, w.identity, target.Project, w.binding, draft)
 	err = w.withSessionBindingTargetError(err, fromBinding)
+	if target.Branch == "" {
+		err = withBaseTargetError("", err)
+	}
 	var validation *ValidationError
 	if errors.As(err, &validation) {
 		for _, warning := range validation.Warnings {
@@ -78,7 +81,12 @@ func (w *WorkflowSession) prepareWorkflowNewEntry(ctx *engine.Context) (map[stri
 		return nil, err
 	}
 	id := model.GenerateIDAt(entryType, draftLayer(layer), suffix, w.app.now())
-	return map[string]string{"entryId": id, "project": string(w.instanceProject(ctx.Instance)), "branch": branch}, nil
+	project := w.instanceProject(ctx.Instance)
+	_, source := w.effectiveTargetSource(project, ctx.Store)
+	if source == "" {
+		source = targetSourceBase
+	}
+	return map[string]string{"entryId": id, "project": string(project), "branch": branch, "source": source}, nil
 }
 
 // newEntryPublicationKey is the capture's storage identity: this session, the
@@ -226,7 +234,7 @@ func (w *WorkflowSession) capturePreflightState(ctx *engine.Context) (bool, bool
 		if err != nil {
 			return false, false, err
 		}
-		target, err = runtime.defaultMutationTarget()
+		target, _, err = runtime.baseTarget(w.ctx)
 		if err != nil {
 			return false, false, err
 		}

@@ -113,6 +113,38 @@ func TestEntries_EmbeddedSetLoads(t *testing.T) {
 	}
 }
 
+// TestImplementationHoldsNoBranchState: the run's reads and writes follow the
+// session's current branch, so the procedure declares no branch field and has
+// no base-target, work-target or landing step (20260923-230855-d-cpt-34w).
+// Older sessions that ran them replay as history.
+func TestImplementationHoldsNoBranchState(t *testing.T) {
+	entries, err := Entries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Canonical != "implementation" {
+			continue
+		}
+		spec, err := engine.ParseSpec(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"baseBranch", "workBranch", "worktreeMode"} {
+			if _, ok := spec.State[field]; ok {
+				t.Errorf("implementation still declares %s", field)
+			}
+		}
+		for _, step := range []string{"baseTarget", "workTarget", "landing"} {
+			if spec.StepByID[step] != nil {
+				t.Errorf("implementation still has the %s step", step)
+			}
+		}
+		return
+	}
+	t.Fatal("embedded set ships no implementation procedure")
+}
+
 func TestCaptureCarriesFactIndexThroughPlaybackAndWrite(t *testing.T) {
 	entries, err := Entries()
 	if err != nil {

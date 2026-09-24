@@ -171,19 +171,36 @@ func WithBranchDir(branch, dir string) Option {
 }
 
 // branchTargets acquires per-branch graph stores, falling back to the default
-// branch's store for unknown branches.
+// branch's store for unknown branches. A branch dropped through
+// World.DropBranch fails acquisition the way the local runtime fails a branch
+// whose registered checkout is gone.
 type branchTargets struct {
 	fallback   sdd.GraphStore
 	graphs     map[string]sdd.GraphStore
 	finalizers []sdd.MutationFinalizer
+	dropped    map[string]bool
+}
+
+func (b branchTargets) checkout(branch string) error {
+	if b.dropped[branch] {
+		return fmt.Errorf("sdd: mutation target branch %q must have exactly one registered checkout (found 0)", branch)
+	}
+	return nil
 }
 
 func (b branchTargets) Acquire(_ context.Context, target sdd.MutationTarget) (*sdd.AcquiredTarget, error) {
+	if err := b.checkout(target.Branch); err != nil {
+		return nil, err
+	}
 	graph, ok := b.graphs[target.Branch]
 	if !ok {
 		graph = b.fallback
 	}
 	return &sdd.AcquiredTarget{Target: target, Graph: graph, Finalizers: b.finalizers, Release: func() error { return nil }}, nil
+}
+
+func (b branchTargets) ValidateBranch(_ context.Context, target sdd.MutationTarget) error {
+	return b.checkout(target.Branch)
 }
 
 type branchReadStore struct {
@@ -192,6 +209,11 @@ type branchReadStore struct {
 }
 
 func (s branchReadStore) AcquireSnapshot(ctx context.Context, q sdd.SnapshotReadQuery) (*sdd.AcquiredSnapshot, error) {
+	if q.Branch != "" {
+		if err := s.targets.checkout(q.Branch); err != nil {
+			return nil, err
+		}
+	}
 	graph := s.targets.graphs[q.Branch]
 	if graph == nil {
 		graph = s.GraphStore
@@ -207,6 +229,20 @@ type World struct {
 	Identity sdd.RequestIdentity
 	GraphDir string
 	LLM      *LLMScript
+
+	dropped map[string]bool
+}
+
+// DropBranch removes a registered branch's checkout: from here every read,
+// write and binding declaration on that branch fails as the local runtime
+// fails a branch without a registered checkout — the host merged and deleted
+// its work branch or worktree.
+func (w *World) DropBranch(t *testing.T, branch string) {
+	t.Helper()
+	if w.dropped == nil {
+		t.Fatalf("DropBranch(%q): the world registers no branches (use WithBranchDir)", branch)
+	}
+	w.dropped[branch] = true
 }
 
 type accessResolver struct {
@@ -270,8 +306,10 @@ func NewWorld(t *testing.T, opts ...Option) *World {
 		Project: sdd.ProjectRef{ID: "proctest"}, DefaultBranch: "main",
 		Graph: graph, LLM: script, Finalizers: cfg.finalizers,
 	}
+	var dropped map[string]bool
 	if len(cfg.branchDirs) > 0 {
-		targets := branchTargets{fallback: graph, graphs: map[string]sdd.GraphStore{"main": graph}, finalizers: cfg.finalizers}
+		dropped = map[string]bool{}
+		targets := branchTargets{fallback: graph, graphs: map[string]sdd.GraphStore{"main": graph}, finalizers: cfg.finalizers, dropped: dropped}
 		for branch, dir := range cfg.branchDirs {
 			store, err := localadapter.NewFilesystemGraphStore(localadapter.FilesystemGraphStoreOptions{Project: "proctest", GraphDir: dir, Branch: branch})
 			if err != nil {
@@ -281,7 +319,7 @@ func NewWorld(t *testing.T, opts ...Option) *World {
 		}
 		options.Targets = targets
 		options.Graph = branchReadStore{GraphStore: graph, targets: targets}
-		options.Branches = sdd.BranchValidatorFunc(func(context.Context, sdd.MutationTarget) error { return nil })
+		options.Branches = targets
 	}
 	runtime, err := sdd.NewProjectRuntime(options)
 	if err != nil {
@@ -293,7 +331,7 @@ func NewWorld(t *testing.T, opts ...Option) *World {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &World{App: application, Identity: sdd.RequestIdentity{Subject: "tester"}, GraphDir: cfg.graphDir, LLM: script}
+	return &World{App: application, Identity: sdd.RequestIdentity{Subject: "tester"}, GraphDir: cfg.graphDir, LLM: script, dropped: dropped}
 }
 
 // Session wraps one workflow session on the world.

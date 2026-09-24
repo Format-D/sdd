@@ -218,12 +218,15 @@ func TestWorkflowEffectiveTargetPrecedenceIsSharedByReadsAndWrites(t *testing.T)
 		{field: "captureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 		{field: "resolvedCaptureBranch", wantWrite: "main", wantEntry: currentID},
 		{field: "resolvedCaptureBranch", published: true, wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
-		{field: "workBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
+		// workBranch left procedure state (20260914-180822-d-cpt-9kv): a
+		// stale value in an older session's store no longer outranks the
+		// binding.
+		{field: "workBranch", wantWrite: "main", wantEntry: currentID},
 		{binding: "work", wantRead: "work", wantWrite: "work", wantEntry: workID},
 		{binding: "work", field: "captureBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
 		{binding: "work", field: "resolvedCaptureBranch", wantRead: "work", wantWrite: "work", wantEntry: workID},
 		{binding: "work", field: "resolvedCaptureBranch", published: true, wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
-		{binding: "work", field: "workBranch", wantRead: "explicit", wantWrite: "explicit", wantEntry: explicitID},
+		{binding: "work", field: "workBranch", wantRead: "work", wantWrite: "work", wantEntry: workID},
 	}
 	for _, tt := range tests {
 		name := fmt.Sprintf("binding=%q field=%q published=%v", tt.binding, tt.field, tt.published)
@@ -258,18 +261,18 @@ func TestWorkflowEffectiveTargetPrecedenceIsSharedByReadsAndWrites(t *testing.T)
 			if read != wantRead {
 				t.Fatalf("read target = %+v, want %+v", read, wantRead)
 			}
-			write, writeFromBinding, resolvedDefault, err := workflow.concreteEffectiveTarget(store)
+			write, source, err := workflow.concreteEffectiveTarget(store)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if write.Branch != tt.wantWrite || write.Project != "example" {
 				t.Fatalf("write target = %+v, want branch %q", write, tt.wantWrite)
 			}
-			if writeFromBinding != fromBinding {
-				t.Fatalf("binding provenance differs: read=%v write=%v", fromBinding, writeFromBinding)
+			if (source == targetSourceBinding) != fromBinding {
+				t.Fatalf("binding provenance differs: read=%v write source=%q", fromBinding, source)
 			}
-			if resolvedDefault != (read.Branch == "") {
-				t.Fatalf("resolvedDefault = %v for read target %+v", resolvedDefault, read)
+			if (source == targetSourceBase) != (read.Branch == "") {
+				t.Fatalf("write source = %q for read target %+v", source, read)
 			}
 			if read.Branch != "" && read != write {
 				t.Fatalf("read target %+v and write target %+v disagree", read, write)
@@ -368,14 +371,29 @@ func TestWorkflowSessionBindingDriftProvenanceOnlyForBindingTargets(t *testing.T
 		t.Fatalf("binding drift overclaimed checkout state: %v", err)
 	}
 
-	for _, field := range []string{"captureBranch", "workBranch"} {
-		_, explicitErr := (&workflowGraphs{workflow: workflow}).CurrentFor(workflowTargetStore(t, map[string]any{field: "drifted"}))
-		if explicitErr == nil {
-			t.Fatalf("%s drift unexpectedly succeeded", field)
-		}
-		if strings.Contains(explicitErr.Error(), "session is bound") {
-			t.Fatalf("%s drift was mislabeled as session binding: %v", field, explicitErr)
-		}
+	// A state field that sends a read to an unavailable branch is named with
+	// the read (20260914-180822-d-cpt-9kv); it is never labeled as the binding.
+	unbound := &WorkflowSession{
+		app: workflow.app, project: "example", identity: workflow.identity, ctx: t.Context(),
+	}
+	_, explicitErr := (&workflowGraphs{workflow: unbound}).CurrentFor(workflowTargetStore(t, map[string]any{"captureBranch": "drifted"}))
+	if explicitErr == nil {
+		t.Fatal("captureBranch drift unexpectedly succeeded")
+	}
+	if strings.Contains(explicitErr.Error(), "session is bound") {
+		t.Fatalf("captureBranch drift was mislabeled as session binding: %v", explicitErr)
+	}
+	if !strings.Contains(explicitErr.Error(), `reading the graph on branch "drifted", chosen by the captureBranch state field`) {
+		t.Fatalf("captureBranch drift did not name the read and the field: %v", explicitErr)
+	}
+	if !errors.Is(explicitErr, driftCause) {
+		t.Fatalf("captureBranch drift did not preserve original cause: %v", explicitErr)
+	}
+	// workBranch left procedure state: a stale value in an old session's store
+	// is ignored, so the read follows the binding and reports it as such.
+	_, staleErr := (&workflowGraphs{workflow: workflow}).CurrentFor(workflowTargetStore(t, map[string]any{"workBranch": "elsewhere"}))
+	if staleErr == nil || !strings.Contains(staleErr.Error(), `session is bound to branch "drifted"`) {
+		t.Fatalf("stale workBranch did not fall through to the binding: %v", staleErr)
 	}
 
 	for name, readErr := range map[string]error{
@@ -418,28 +436,55 @@ func TestWorkflowSessionBindingDriftProvenanceOnlyForBindingTargets(t *testing.T
 	}
 }
 
-func TestWorkflowWIPRequiresExplicitBaseBranchBeforeCallingApplication(t *testing.T) {
-	workflow := &WorkflowSession{}
-	registry := engine.NewRegistry()
-	if err := workflow.registerWorkflowWIP(registry); err != nil {
-		t.Fatal(err)
-	}
-	tests := []struct {
-		command string
-		values  map[string]any
+// TestWorkflowWIPTargetsTheSessionsCurrentBranch: marker writes go to the
+// session's current branch, resolved to a concrete branch the intent records
+// (20260923-230855-d-cpt-34w).
+func TestWorkflowWIPTargetsTheSessionsCurrentBranch(t *testing.T) {
+	runtime := &ProjectRuntime{options: ProjectRuntimeOptions{
+		Project: ProjectRef{ID: "example"}, DefaultBranch: "main",
+		Graph: workflowTargetGraphStore{snapshot: workflowTargetSnapshot(t, "main-r1", nil)},
+	}}
+	app := &Application{access: workflowTargetAccess{runtime: runtime}}
+	for _, tt := range []struct {
+		binding    string
+		wantBranch string
 	}{
-		{command: "wipStart", values: map[string]any{"anchor": "20260717-120000-s-tac-wrk"}},
-		{command: "wipDone", values: map[string]any{"wipMarker": "20260717-120000-christopher"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
-			command, ok := registry.Command(tt.command)
-			if !ok {
-				t.Fatalf("%s command is not registered", tt.command)
+		{wantBranch: "main"},
+		{binding: "work", wantBranch: "work"},
+	} {
+		t.Run(fmt.Sprintf("binding=%q", tt.binding), func(t *testing.T) {
+			workflow := &WorkflowSession{
+				app: app, project: "example", identity: RequestIdentity{Subject: "christopher"}, ctx: t.Context(),
+				branch: tt.binding,
 			}
-			_, err := command.Prepare(&engine.Context{Store: workflowTargetStore(t, tt.values)})
-			if err == nil || err.Error() != "WIP write requires an explicit baseBranch" {
-				t.Fatalf("%s error = %v", tt.command, err)
+			registry := engine.NewRegistry()
+			if err := workflow.registerWorkflowWIP(registry); err != nil {
+				t.Fatal(err)
+			}
+			for command, values := range map[string]map[string]any{
+				"wipStart": {"anchor": "20260717-120000-s-tac-wrk"},
+				"wipDone":  {"wipMarker": "20260717-120000-christopher"},
+			} {
+				registered, _ := registry.Command(command)
+				store := workflowTargetStore(t, nil)
+				for name, value := range values {
+					if name == "wipMarker" {
+						if err := store.WriteEngine(name, value); err != nil {
+							t.Fatal(err)
+						}
+						continue
+					}
+					if _, err := store.WriteState(map[string]any{name: value}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				recorded, err := registered.Prepare(&engine.Context{Store: store})
+				if err != nil {
+					t.Fatalf("%s: %v", command, err)
+				}
+				if recorded["branch"] != tt.wantBranch || recorded["project"] != "example" {
+					t.Fatalf("%s recorded %v, want branch %q", command, recorded, tt.wantBranch)
+				}
 			}
 		})
 	}

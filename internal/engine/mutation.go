@@ -246,7 +246,12 @@ func (s *Session) applyCancellation(inst *Instance, returnStep string) {
 		inst.Status, inst.Outcome = StatusAbandoned, MutationCancelled
 		return
 	}
+	if inst.Spec.StepByID[returnStep] == nil {
+		inst.retiredStep = returnStep
+		return
+	}
 	inst.Step = returnStep
+	inst.retiredStep = ""
 }
 
 func (s *Session) restoreIntent(event Event) error {
@@ -270,7 +275,7 @@ func (s *Session) restoreIntent(event Event) error {
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return err
 	}
-	if event.Position == 0 || data.Step != inst.Step || data.Command == "" {
+	if event.Position == 0 || data.Step != inst.loggedStep() || data.Command == "" {
 		return fmt.Errorf("mutation intent has an invalid position or invocation")
 	}
 	s.intent = &MutationIntent{Ref: event.Position, Instance: inst.ID, Step: data.Step, Command: data.Command, Values: data.Values, To: data.To}

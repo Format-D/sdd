@@ -72,6 +72,23 @@ func (f BranchValidatorFunc) ValidateBranch(ctx context.Context, target Mutation
 	return f(ctx, target)
 }
 
+// BaseBranchResolver names the branch a composition derives as an unbound
+// session's base (20260923-233057-d-cpt-ekd). A local composition answers the
+// branch its serving checkout has checked out at the moment of the call; an
+// empty answer means it has none, and the configured default branch applies. A composition without one uses the configured default.
+type BaseBranchResolver interface {
+	BaseBranch(context.Context) (string, error)
+}
+
+// BaseSource says where an unbound session's base branch came from.
+type BaseSource string
+
+const (
+	BaseFromCheckout  BaseSource = "the serving checkout's branch"
+	BaseWithoutBranch BaseSource = "configured default; the serving checkout has no branch"
+	BaseFromDefault   BaseSource = "configured default"
+)
+
 // targetAcquisitionError marks failures from the one shared target-acquisition
 // boundary without changing their public message or typed cause. Workflow
 // routing uses the marker to add session-binding provenance only when the
@@ -107,7 +124,19 @@ func withSessionBindingTargetError(branch string, fromBinding bool, err error) e
 	if !errors.As(err, &acquisition) || acquisition.target.Branch != branch {
 		return err
 	}
-	return fmt.Errorf("session is bound to branch %q and acquiring that branch failed; if the binding is stale, re-declare the binding or clear it: %w", branch, err)
+	return fmt.Errorf("session is bound to branch %q and acquiring that branch failed; check that branch out and retry, or, if the binding is stale, re-declare the binding or clear it: %w", branch, err)
+}
+
+// withBaseTargetError names the remedies when the session's derived base
+// branch cannot be acquired: a checkout of it, or a declared branch. An empty
+// branch is the base as the failed acquisition resolved it.
+func withBaseTargetError(branch string, err error) error {
+	var acquisition *targetAcquisitionError
+	if err == nil || !errors.As(err, &acquisition) || (branch != "" && acquisition.target.Branch != branch) {
+		return err
+	}
+	branch = acquisition.target.Branch
+	return fmt.Errorf("the session's base branch %q has no usable checkout; check that branch out and retry, or declare the branch you work on through the session branch-binding capability, then cancel and redo the write: %w", branch, err)
 }
 
 // FixedTargetAcquirer is a small composition adapter for stores whose one
