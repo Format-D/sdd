@@ -28,7 +28,7 @@ Each card runs on a repo from `driver.py setup` with the default task (a `farewe
 ## worktree
 
 - **Goal** — isolation in a separate directory, with a declared branch.
-- **The user's part** — mode: "Use a worktree, keep main untouched." Done playback: "Looks right." Merge: "Yes, merge it into main." Evaluation offer: "No, finish."
+- **The user's part** — mode: "Use a separate worktree." Done playback: "Looks right." Merge: "Yes, merge it into main." Evaluation offer: "No, finish."
 - **Checks** — the worktree is created from `main` after the marker commit; the agent declares the worktree's branch before capturing anything; the done and the marker removal land in the worktree's branch; after the merge the agent returns to the main checkout and clears the binding; `main` is clean.
 
 ## quick

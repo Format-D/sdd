@@ -149,7 +149,10 @@ def save_state(repo, state):
 
 USER_CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CARRIED_SETTINGS = ("model", "model_reasoning_effort", "service_tier")
-DISABLED_FEATURES = ("plugins", "apps", "computer_use", "browser_use", "in_app_browser", "image_generation", "memories")
+# sleep_tool off: Codex asks by posting a question and sleeping until a UI
+# answers inside the turn; without it, the question ends the turn as in a chat.
+DISABLED_FEATURES = ("plugins", "apps", "computer_use", "browser_use", "in_app_browser", "image_generation", "memories",
+                     "sleep_tool")
 
 
 def codex_home(repo):
@@ -237,9 +240,16 @@ def print_turn(number, turn, items):
     if turn.get("error"):
         print(f"  turn error: {brief(turn['error'], 400)}")
     messages = [i for i in items if i["type"] == "agentMessage"]
-    final = [m for m in messages if m.get("phase") == "final_answer"] or messages
+    final = [m for m in messages if m.get("phase") == "final_answer"] or messages[-1:]
     print("== agent says:")
-    print(final[-1]["text"] if final else "(no message)")
+    for message in final:
+        print(message["text"])
+        for question in message.get("questions") or []:
+            print(f"  [question] {question.get('title')}")
+            for option in question.get("options") or []:
+                print(f"    - {option}")
+    if not final:
+        print("(no message)")
 
 
 def run(repo, state, text, timeout, fresh):
