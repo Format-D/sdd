@@ -750,11 +750,11 @@ func pruneEmptyDirs(dir string) {
 const agentsMDScaffold = "# AGENTS.md\n" +
 	"\n" +
 	"This project uses SDD (Signal → Dialogue → Decision): decisions and\n" +
-	"signals live in a graph under `.sdd/graph/`, managed by the `sdd` CLI.\n" +
+	"signals live in a graph under `.sdd/graph/`.\n" +
 	"\n" +
-	"- Run `sdd view` for the current state.\n" +
 	"- Work with the graph through dialogue using the SDD skill — `/sdd` in\n" +
-	"  Claude Code, or the `sdd` skill in Codex.\n" +
+	"  Claude Code, `$sdd` in Codex. It serves the current state and every\n" +
+	"  move through the `sdd` MCP server.\n" +
 	"- Skills are rendered per agent and committed under `.claude/skills/`\n" +
 	"  (Claude Code) and `.agents/skills/` (Codex). Don't edit them by hand;\n" +
 	"  regenerate with `sdd init`.\n" +
