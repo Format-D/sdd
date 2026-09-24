@@ -530,8 +530,9 @@ func FormatConfig(cfg PerRepoConfig) string {
 	} else {
 		repoIDBlock += "# repo_id: github.com/org/repo\n"
 	}
-	defaultBranchBlock := "# Concrete branch for ordinary engine captures. Implementation runs carry\n" +
-		"# explicit base/work branches instead; cwd never selects mutation authority.\n"
+	defaultBranchBlock := "# The repository's default branch. An engine session that declares no\n" +
+		"# branch works on the branch its served checkout has checked out, and on\n" +
+		"# this one when that checkout has none.\n"
 	if cfg.DefaultBranch != "" {
 		defaultBranchBlock += "default_branch: " + cfg.DefaultBranch + "\n"
 	} else {
