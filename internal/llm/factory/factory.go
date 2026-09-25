@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/networkteam/sdd/internal/llm/claude"
-	gollmrunner "github.com/networkteam/sdd/internal/llm/gollm"
 	"github.com/networkteam/sdd/internal/model"
 	"github.com/networkteam/sdd/pkg/llm"
 )
@@ -123,7 +122,7 @@ func buildProvider(cfg model.LLMConfig) (llm.Runner, error) {
 	case "claude-cli":
 		return claude.NewRunner(cfg.Model), nil
 	case "anthropic", "openai", "ollama":
-		return gollmrunner.NewRunner(cfg)
+		return newPurposeMux(cfg)
 	default:
 		return nil, fmt.Errorf("unknown llm provider %q (supported: claude-cli, anthropic, openai, ollama)", cfg.Provider)
 	}
