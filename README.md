@@ -398,7 +398,7 @@ Claude Code is the primary, most-exercised harness; Codex support is recent and 
 
 ### LLM provider (summaries + pre-flight)
 
-SDD calls an LLM in two places — summarizing each captured entry (the short text rendered in `sdd view` and catch-up) and running pre-flight validation on every draft before it lands. Four providers supported: `anthropic` (cloud API), `openai` (cloud API), `ollama` (local), and `claude-cli` (your local Claude Code CLI authentication). Any model behind an OpenAI-compatible gateway is reached as `openai` with an `endpoint`.
+SDD calls an LLM in two places — summarizing each captured entry (the short text rendered in `sdd view` and catch-up) and running pre-flight validation on every draft before it lands. Four providers supported: `anthropic` (cloud API), `openai` (cloud API), `ollama` (local), and `claude-cli` (your local Claude Code CLI authentication).
 
 ```yaml
 # Anthropic API
@@ -447,8 +447,6 @@ llm:
   provider: claude-cli
   model: claude-sonnet-4-6
 ```
-
-Pre-flight and the writing guide ask the provider to constrain its response to a JSON schema wherever the provider reads one: `response_format` on `openai`, `format` on `ollama`. The schema is reflected from the same Go struct the response is parsed into, so the wire contract and the parser cannot drift. Summaries are never constrained, since they answer in prose, and `anthropic` and `claude-cli` carry no schema.
 
 Remote providers (`anthropic`, `openai`) get a conservative rate limit applied automatically, biased below tier-1 ceilings so bursty operations like `sdd summarize --all` don't trip 429s. Override with `rate_limit_rps` on higher tiers.
 

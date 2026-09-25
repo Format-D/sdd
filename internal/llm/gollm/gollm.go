@@ -30,35 +30,11 @@ type Runner struct {
 	useCache bool
 }
 
-// Option configures a Runner at construction.
-type Option func(*options)
-
-type options struct {
-	schemaName string
-	schema     map[string]any
-}
-
-// WithStructuredOutput constrains responses to schema where the provider has
-// a known wire key for it. Providers without one (anthropic, and any not
-// listed in structuredOutputOption) are left unconstrained rather than sent a
-// key they would echo into the prompt or reject.
-func WithStructuredOutput(name string, schema map[string]any) Option {
-	return func(o *options) {
-		o.schemaName = name
-		o.schema = schema
-	}
-}
-
 // NewRunner constructs a gollm-backed Runner from an LLMConfig. Provider
 // must be one of the gollm-supported providers (e.g. "anthropic", "openai",
 // "ollama"). Returns a typed error when required config is missing (API
 // key for remote providers).
-func NewRunner(cfg model.LLMConfig, opts ...Option) (*Runner, error) {
-	var o options
-	for _, apply := range opts {
-		apply(&o)
-	}
-
+func NewRunner(cfg model.LLMConfig) (*Runner, error) {
 	if cfg.Provider == "" {
 		return nil, fmt.Errorf("gollm: provider not configured")
 	}
@@ -77,7 +53,7 @@ func NewRunner(cfg model.LLMConfig, opts ...Option) (*Runner, error) {
 		return nil, fmt.Errorf("gollm: %w", err)
 	}
 
-	cfgOpts := []upstream.ConfigOption{
+	opts := []upstream.ConfigOption{
 		upstream.SetProvider(cfg.Provider),
 		upstream.SetModel(cfg.Model),
 		upstream.SetMaxRetries(maxAttempts - 1),
@@ -96,7 +72,7 @@ func NewRunner(cfg model.LLMConfig, opts ...Option) (*Runner, error) {
 		if key == "" {
 			return nil, fmt.Errorf("gollm: api key missing for provider %q — run `sdd config set llm.api_keys.%s <key>`", cfg.Provider, cfg.Provider)
 		}
-		cfgOpts = append(cfgOpts, upstream.SetAPIKey(key))
+		opts = append(opts, upstream.SetAPIKey(key))
 	}
 
 	// Ollama endpoint override. A key is optional: local deployments run
@@ -104,22 +80,22 @@ func NewRunner(cfg model.LLMConfig, opts ...Option) (*Runner, error) {
 	// Bearer token.
 	if cfg.Provider == "ollama" {
 		if cfg.OllamaEndpoint != "" {
-			cfgOpts = append(cfgOpts, upstream.SetOllamaEndpoint(cfg.OllamaEndpoint))
+			opts = append(opts, upstream.SetOllamaEndpoint(cfg.OllamaEndpoint))
 		}
 		if key := cfg.APIKeys["ollama"]; key != "" {
-			cfgOpts = append(cfgOpts, upstream.SetAPIKey(key))
+			opts = append(opts, upstream.SetAPIKey(key))
 		}
 	}
 
 	if cfg.Provider == "openai" && cfg.Endpoint != "" {
-		cfgOpts = append(cfgOpts, upstream.SetOpenAIEndpoint(cfg.Endpoint))
+		opts = append(opts, upstream.SetOpenAIEndpoint(cfg.Endpoint))
 	}
 
 	// Enable Anthropic prompt caching — sends the anthropic-beta header so
 	// cache_control blocks on system prompts are honored server-side.
 	useCache := cfg.Provider == "anthropic"
 	if useCache {
-		cfgOpts = append(cfgOpts, upstream.SetEnableCaching(true))
+		opts = append(opts, upstream.SetEnableCaching(true))
 	}
 
 	// Timeout flows into gollm's HTTP client.
@@ -128,10 +104,10 @@ func NewRunner(cfg model.LLMConfig, opts ...Option) (*Runner, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gollm: parsing timeout %q: %w", cfg.Timeout, err)
 		}
-		cfgOpts = append(cfgOpts, upstream.SetTimeout(d))
+		opts = append(opts, upstream.SetTimeout(d))
 	}
 
-	client, err := upstream.NewLLM(cfgOpts...)
+	client, err := upstream.NewLLM(opts...)
 	if err != nil {
 		// gollm validates ollama by probing the endpoint; on failure it
 		// reports a generic apikey validation error. Rewrap as a targeted
@@ -150,12 +126,6 @@ func NewRunner(cfg model.LLMConfig, opts ...Option) (*Runner, error) {
 	// unknown option keys straight into the request body.
 	for _, k := range sortedKeys(cfg.Params) {
 		client.SetOption(k, cfg.Params[k])
-	}
-
-	if o.schema != nil {
-		if key, value := structuredOutputOption(cfg.Provider, o.schemaName, o.schema); key != "" {
-			client.SetOption(key, value)
-		}
 	}
 
 	return &Runner{
@@ -249,28 +219,6 @@ func usageFromResponse(u *upstream.Usage) llm.Usage {
 		OutputTokens:      out,
 		CacheReadTokens:   u.CacheReadInputTokens,
 		CacheCreateTokens: u.CacheCreationInputTokens,
-	}
-}
-
-// structuredOutputOption maps a schema onto the request-body key the provider
-// reads it from. The gollm option map is copied into the body verbatim, so the
-// key name is the whole contract. An empty key means the provider has no
-// structured-output channel and the schema is not sent.
-func structuredOutputOption(provider, name string, schema map[string]any) (string, any) {
-	switch provider {
-	case "openai":
-		return "response_format", map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   name,
-				"strict": true,
-				"schema": schema,
-			},
-		}
-	case "ollama":
-		return "format", schema
-	default:
-		return "", nil
 	}
 }
 

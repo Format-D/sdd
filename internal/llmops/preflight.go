@@ -563,7 +563,13 @@ func parsePreflightResult(output string) (*PreflightResult, error) {
 		return nil, err
 	}
 
-	var resp preflightResponse
+	var resp struct {
+		Findings []struct {
+			Severity    string `json:"severity"`
+			Category    string `json:"category"`
+			Observation string `json:"observation"`
+		} `json:"findings"`
+	}
 	if err := json.Unmarshal([]byte(jsonText), &resp); err != nil {
 		return nil, fmt.Errorf("parsing pre-flight JSON: %w", err)
 	}
